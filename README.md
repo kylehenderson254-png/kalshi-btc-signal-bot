@@ -30,3 +30,7 @@ Signal strength: Weak (<2¢), Moderate (2–<4¢), Strong (≥4¢) absolute YES 
 - YES and NO bid/ask are displayed as colored, button-like **noninteractive** tiles. Clicking them does not trade.
 - 3-second polling can hit Kalshi rate limits, experience latency, or increase Streamlit Community Cloud load. Choose 5 or 10 seconds if errors occur.
 - Public API polling is not a Kalshi WebSocket live feed. Charts are sampled at refreshes, and each session retains its own history.
+
+
+### Above / Below labels
+Green and red quote panels show ABOVE TARGET / BELOW TARGET only when the public contract-rule text explicitly confirms YES corresponds to above. Otherwise they retain YES / NO, preventing an incorrect label on a different contract type. Quotes, historical results, and radar calculations remain based on the actual Kalshi YES / NO data.

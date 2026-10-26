@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 import html
+import re
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
@@ -92,6 +93,25 @@ def target(m):
                 return str(value)
     return m.get("yes_sub_title") or m.get("subtitle") or "See contract rules"
 
+
+
+
+def directional_labels(m):
+    """Only rename YES/NO if the contract explicitly describes YES as above the target.
+
+    A generic title or numeric strike is insufficient to infer contract semantics.
+    """
+    yes_description = " ".join(str(m.get(key) or "") for key in (
+        "yes_sub_title", "yes_subtitle", "rules_primary", "rules_secondary"
+    )).lower()
+    yes_description = " ".join(yes_description.split())
+    # Do not infer from generic "will price be above" question alone, since
+    # a question does not establish the direction of YES in every contract.
+    if re.search(r"\byes\s+(?:if|means|wins?\s+if|settles?\s+if)\s+.{0,100}\b(?:above|higher than|greater than|exceeds)\b", yes_description):
+        return "ABOVE TARGET", "BELOW TARGET", True
+    if re.search(r"\b(?:above|higher than|greater than|exceeds)\b.{0,70}\b(?:settles?\s+yes|results?\s+in\s+yes)\b", yes_description):
+        return "ABOVE TARGET", "BELOW TARGET", True
+    return "YES", "NO", False
 
 @st.cache_data(ttl=2, show_spinner=False)
 def fetch_markets(series_ticker):
@@ -259,7 +279,10 @@ def render_card(name, series, emoji):
                 st.error("⏳ FINAL MINUTE — signals can change quickly")
             elif remaining_seconds <= 180:
                 st.warning("⏳ Less than 3 minutes remain")
-        st.markdown("**Kalshi YES / NO bid and ask**")
+        above_label, below_label, verified_direction = directional_labels(m)
+        st.markdown("**Above / Below target — Kalshi bid and ask**" if verified_direction else "**Kalshi YES / NO bid and ask**")
+        if not verified_direction:
+            st.caption("Direction not confirmed by available contract-rule text. Showing official YES / NO labels for accuracy.")
         yes_bid = cents(price(m, "yes_bid_dollars", "yes_bid"))
         yes_ask = cents(price(m, "yes_ask_dollars", "yes_ask"))
         no_bid = cents(price(m, "no_bid_dollars", "no_bid"))
@@ -268,19 +291,19 @@ def render_card(name, series, emoji):
         yes_col, no_col = st.columns(2, gap="small")
         with yes_col:
             st.markdown(
-                f'<div class="quote-tile yes-tile"><div class="quote-title">🟢 YES</div>'
+                f'<div class="quote-tile yes-tile"><div class="quote-title">🟢 {above_label}</div>'
                 f'<div class="quote-row"><span>BID</span><b>{html.escape(yes_bid)}</b></div>'
                 f'<div class="quote-row"><span>ASK</span><b>{html.escape(yes_ask)}</b></div>'
                 f'</div>', unsafe_allow_html=True,
             )
         with no_col:
             st.markdown(
-                f'<div class="quote-tile no-tile"><div class="quote-title">🔴 NO</div>'
+                f'<div class="quote-tile no-tile"><div class="quote-title">🔴 {below_label}</div>'
                 f'<div class="quote-row"><span>BID</span><b>{html.escape(no_bid)}</b></div>'
                 f'<div class="quote-row"><span>ASK</span><b>{html.escape(no_ask)}</b></div>'
                 f'</div>', unsafe_allow_html=True,
             )
-        st.caption("Quote display only · No trading actions")
+        st.caption("Quote display only · No trading actions · ABOVE maps to YES only when verified from contract rules")
         e, f = st.columns(2)
         e.metric("Target / strike", target(m))
         f.metric("Last YES", cents(price(m, "last_price_dollars", "last_price")))
@@ -376,7 +399,7 @@ if st.session_state.radar_events:
 else:
     st.caption("No alerts yet. Keep the dashboard open for several refreshes.")
 
-st.caption("Recent-market arrows show Kalshi settlement results: YES ↑ / NO ↓. They do not show the direction of the underlying asset price. If Kalshi has not returned a result, it is omitted.")
+st.caption("Recent-market arrows show official Kalshi settlement results: YES ↑ / NO ↓. These are not automatically ABOVE / BELOW unless contract rules establish that mapping.")
 st.caption("Radar thresholds: direction change ≥0.5¢ each way; sudden move ≥" + str(sudden_cents) + "¢ per sample. Quote history lasts only for this Streamlit session. These are price-movement observations, not trading recommendations.")
 st.caption(f"Last refresh: {datetime.now(CENTRAL):%b %d, %Y · %I:%M:%S %p %Z} · Contract countdowns align to Kalshi close timestamps; updates are not guaranteed every {refresh_seconds}s.")
 st_autorefresh(interval=refresh_seconds * 1000, key="kalshi_grid_refresh")
