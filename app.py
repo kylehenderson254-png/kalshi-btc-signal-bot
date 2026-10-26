@@ -7,7 +7,7 @@ import html
 import re
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
-from call_tracker import store_from_secrets, process, candidate
+from call_tracker import store_from_secrets, process, candidate, early_store_from_secrets, process_early
 from pressure_radar import show_pressure_radar
 
 API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
@@ -412,9 +412,13 @@ def render_card(name, series, emoji):
                     st.error(f"EARLY LEAN: BELOW TARGET ↓ · YES quote midpoint {early_mid * 100:.1f}¢")
                 else:
                     st.info(f"EARLY LEAN: NO CLEAR CALL · YES quote midpoint {early_mid * 100:.1f}¢")
-                st.caption("Provisional signal: updates with quotes, can reverse, and is not graded. The separate 5-minute call is the only locked and graded prediction.")
+                st.caption("Live preview can change. The first eligible early signal is recorded separately and graded after official settlement; the 5-minute locked call remains independent.")
         else:
             st.caption("Early preview window has ended. Check the 5-minute locked call below.")
+        early_saved = st.session_state.get("early_call_map", {}).get(ticker)
+        if early_saved:
+            st.caption(f"📜 Recorded early call: {early_saved['call']} · {early_saved['status'].upper()} · "
+                       f"YES midpoint {early_saved['yes_midpoint'] * 100:.1f}¢ · {early_saved['locked_at']} UTC")
         prediction_panel(m, verified_direction, remaining if closing else None, ticker)
         st.markdown("**🔒 Automatic 5-minute locked call**")
         stored = st.session_state.get("locked_call_map", {}).get(ticker)
@@ -485,6 +489,26 @@ else:
     st.session_state["locked_call_rows"] = []
     st.session_state["locked_call_map"] = {}
 
+# Early history has its own Supabase table; failures never block locked-call tracking.
+early_store = early_store_from_secrets(st.secrets)
+st.session_state["early_call_rows"] = []
+st.session_state["early_call_map"] = {}
+st.session_state["early_tracker_activity"] = []
+st.session_state["early_tracker_error"] = None
+if early_store:
+    try:
+        early_markets = {}
+        for _, series, _ in SERIES:
+            try:
+                early_markets[series] = current_market(fetch_markets(series))
+            except (requests.RequestException, ValueError):
+                early_markets[series] = None
+        st.session_state["early_tracker_activity"] = process_early(early_store, current_by_series=early_markets)
+        st.session_state["early_call_rows"] = early_store.all()
+        st.session_state["early_call_map"] = {r["ticker"]: r for r in st.session_state["early_call_rows"]}
+    except (requests.RequestException, ValueError) as exc:
+        st.session_state["early_tracker_error"] = str(exc)
+
 st.title("📡 Kalshi Market Command Center")
 st.caption("15-minute markets · Kalshi contract-aligned countdowns · Dashboard-only Flip Radar · Read-only")
 st.caption(f"⟳ Refresh interval: {refresh_seconds}s · API quotes may lag or be rate-limited · not a streaming connection")
@@ -531,6 +555,42 @@ else:
     for message in st.session_state.get("tracker_activity", []):
         st.info(message)
     st.caption("Calls are locked once per contract ticker; no later price changes overwrite them. Dashboard scans only while open unless an external scheduler runs worker.py.")
+
+st.subheader("🌅 Early Call Scoreboard")
+if not early_store:
+    st.warning("Early history requires Supabase secrets (same credentials as Locked Calls).")
+elif st.session_state.get("early_tracker_error"):
+    st.warning("Early history is not ready. Create the early_calls table using the included SQL setup file, then refresh.")
+    st.caption(st.session_state["early_tracker_error"])
+else:
+    early_rows = st.session_state.get("early_call_rows", [])
+    early_graded = [r for r in early_rows if r.get("status") in ("win", "loss")]
+    early_wins = sum(r["status"] == "win" for r in early_graded)
+    ea, eb, ec, ed = st.columns(4)
+    ea.metric("Early wins", early_wins)
+    eb.metric("Early losses", len(early_graded) - early_wins)
+    ec.metric("Early win rate", f"{early_wins / len(early_graded):.1%}" if early_graded else "—")
+    ed.metric("Early pending", sum(r.get("status") == "pending" for r in early_rows))
+    st.caption("Separate from Locked Calls. First qualifying early quote per contract (15–5 minutes before close); "
+               "only official Kalshi results are graded. Market-implied calls are not independent forecasts.")
+    for name, series, emoji in SERIES:
+        subset = [r for r in early_graded if r.get("series_ticker") == series]
+        w = sum(r["status"] == "win" for r in subset)
+        st.write(f"{emoji} **{name}:** {w} W / {len(subset)-w} L · " +
+                 (f"{w / len(subset):.1%}" if subset else "Not graded yet"))
+    with st.expander("📜 Early prediction history", expanded=False):
+        if early_rows:
+            st.dataframe([{
+                "Market": r["market_name"], "Contract": r["ticker"],
+                "Early call": r["call"], "Recorded (UTC)": r["locked_at"],
+                "YES midpoint (¢)": round(r["yes_midpoint"] * 100, 1),
+                "Status": r["status"].upper(),
+                "Settlement": r.get("settlement_result") or "Pending",
+            } for r in early_rows], hide_index=True, use_container_width=True)
+        else:
+            st.info("No early calls recorded yet. Leave the dashboard open during an active contract's first 10 minutes.")
+    for msg in st.session_state.get("early_tracker_activity", []):
+        st.info(msg)
 
 st.subheader("🚨 Flip Radar — All Markets")
 summary_cols = st.columns(4)

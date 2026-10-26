@@ -144,6 +144,98 @@ class Store:
 
 
 
+# Early calls are stored separately; existing locked_calls records are untouched.
+EARLY_MIN_SECONDS = 300
+EARLY_MAX_SECONDS = 900
+
+
+def early_candidate(m, name, series, now=None):
+    """First eligible market-implied call during minutes 0-10 of a 15m contract."""
+    now = now or datetime.now(timezone.utc)
+    close = timestamp(m.get("close_time") or m.get("latest_expiration_time"))
+    opening = timestamp(m.get("open_time"))
+    ticker = m.get("ticker")
+    if not ticker or not close:
+        return None, "Missing ticker or close time"
+    if opening and now < opening:
+        return None, "Not open yet"
+    remaining = (close - now).total_seconds()
+    if not (EARLY_MIN_SECONDS < remaining <= EARLY_MAX_SECONDS):
+        return None, "Outside early window (15 to 5 minutes before close)"
+    if not direction_verified(m):
+        return None, "ABOVE/BELOW direction not verified"
+    bid = quote(m, "yes_bid_dollars", "yes_bid")
+    ask = quote(m, "yes_ask_dollars", "yes_ask")
+    if bid is None or ask is None or not (0 <= bid <= ask <= 1):
+        return None, "Valid YES bid and ask unavailable"
+    if ask - bid > 0.15 or (bid == 0 and ask == 1):
+        return None, "Quote spread too wide"
+    mid = (bid + ask) / 2
+    if mid >= 0.60:
+        call = "ABOVE"
+    elif mid <= 0.40:
+        call = "BELOW"
+    else:
+        return None, "No clear early call (40–60¢ neutral zone)"
+    return {
+        "ticker": ticker, "market_name": name, "series_ticker": series,
+        "call": call, "locked_at": now.isoformat(), "close_time": close.isoformat(),
+        "yes_bid": round(bid, 5), "yes_ask": round(ask, 5),
+        "yes_midpoint": round(mid, 5), "method": "early_yes_midpoint_60_40_v1",
+        "status": "pending",
+    }, None
+
+
+class EarlyStore(Store):
+    def __init__(self, url, key):
+        super().__init__(url, key)
+        self.url = url.rstrip("/") + "/rest/v1/early_calls"
+
+
+def early_store_from_secrets(secrets):
+    url = secrets.get("SUPABASE_URL")
+    key = secrets.get("SUPABASE_SERVICE_ROLE_KEY")
+    return EarlyStore(url, key) if url and key else None
+
+
+def process_early(store, current_by_series=None):
+    """Persist first eligible early call per ticker and grade official outcomes."""
+    events = []
+    current_by_series = current_by_series or {}
+    for name, series in SERIES:
+        try:
+            m = current_by_series.get(series) if series in current_by_series else fetch_current(series)
+            if m:
+                row, reason = early_candidate(m, name, series)
+                if row:
+                    store.insert_once(row)
+                # Do not fill activity with ordinary outside-window messages.
+        except (requests.RequestException, ValueError) as exc:
+            events.append(f"{name} early call storage/API error: {exc}")
+    try:
+        pending = [r for r in store.all() if r.get("status") == "pending"]
+        for row in pending:
+            close = timestamp(row.get("close_time"))
+            if close and close > datetime.now(timezone.utc):
+                continue
+            try:
+                result = get_official_result(row["ticker"])
+                if result is None:
+                    continue
+                actual = "ABOVE" if result == "yes" else "BELOW"
+                status = "win" if row["call"] == actual else "loss"
+                store._request("PATCH", params={"ticker": "eq." + row["ticker"], "status": "eq.pending"}, json={
+                    "status": status, "settlement_result": result,
+                    "graded_at": datetime.now(timezone.utc).isoformat(),
+                }, headers={"Prefer": "return=minimal"})
+                events.append(f"Early call graded {row['ticker']}: {status.upper()}")
+            except (requests.RequestException, ValueError) as exc:
+                events.append(f"Early grading delayed for {row['ticker']}: {exc}")
+    except (requests.RequestException, ValueError) as exc:
+        events.append(f"Unable to load early calls: {exc}")
+    return events
+
+
 def store_from_secrets(secrets):
     url = secrets.get("SUPABASE_URL")
     key = secrets.get("SUPABASE_SERVICE_ROLE_KEY")
