@@ -14,11 +14,16 @@ SERIES = [
     ("Silver", "KXSILVER15M", "🥈"),
     ("WTI Oil", "KXWTI15M", "🛢️"),
 ]
-HISTORY_LIMIT = 30
+HISTORY_LIMIT = 60
+RECENT_RESULTS = 10
 
 st.set_page_config(page_title="Kalshi Market Command Center", page_icon="📡", layout="wide")
 
 st.markdown("""<style>
+.yes-pill {color:#16a34a;font-weight:800;font-size:1.05rem;}
+.no-pill {color:#dc2626;font-weight:800;font-size:1.05rem;}
+.up-arrow {color:#16a34a;font-weight:800;}
+.down-arrow {color:#dc2626;font-weight:800;}
 .block-container {max-width: 1280px; padding-top: 1.5rem; padding-bottom: 2rem;}
 [data-testid="stMetric"] {background: rgba(128,128,128,.06); border-radius: 10px; padding: 10px 12px;}
 </style>""", unsafe_allow_html=True)
@@ -89,6 +94,61 @@ def fetch_markets(series_ticker):
     response.raise_for_status()
     return response.json().get("markets", [])
 
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_recent_results(series_ticker):
+    """Request recently settled contracts; do not infer outcomes from quotes."""
+    response = requests.get(
+        f"{API_BASE}/markets",
+        params={"series_ticker": series_ticker, "status": "settled", "limit": 200},
+        timeout=12,
+    )
+    response.raise_for_status()
+    data = response.json().get("markets", [])
+    outcomes = []
+    for m in data:
+        result = str(m.get("result") or "").lower().strip()
+        if result not in ("yes", "no"):
+            continue
+        outcomes.append(m)
+    outcomes.sort(key=lambda m: when(m.get("close_time") or m.get("latest_expiration_time")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return outcomes[:RECENT_RESULTS]
+
+
+def recent_arrows(series):
+    try:
+        results = fetch_recent_results(series)
+    except (requests.RequestException, ValueError) as exc:
+        st.caption(f"Recent results unavailable: {exc}")
+        return
+    if not results:
+        st.caption("No settled YES/NO results returned for this series.")
+        return
+    arrows = []
+    for m in reversed(results):  # oldest → newest
+        yes = str(m.get("result")).lower() == "yes"
+        arrow = "↑" if yes else "↓"
+        cls = "up-arrow" if yes else "down-arrow"
+        ticker = str(m.get("ticker", ""))
+        arrows.append(f'<span class="{cls}" title="{ticker}: {"YES" if yes else "NO"}">{arrow}</span>')
+    st.markdown("&nbsp; &nbsp; ".join(arrows), unsafe_allow_html=True)
+    st.caption(f"Last {len(results)} settled results · oldest → newest · ↑ YES / ↓ NO")
+
+
+def momentum_stats(m):
+    ticker = m.get("ticker", "")
+    hist = st.session_state.quote_history.get(ticker, [])
+    if len(hist) < 2:
+        return "Warming up", "Not enough samples", 0.0
+    move = (hist[-1][1] - hist[-2][1]) * 100
+    if abs(move) < 0.5:
+        direction = "→ Flat"
+    else:
+        direction = "↑ YES rising" if move > 0 else "↓ YES falling"
+    magnitude = abs(move)
+    strength = "Strong" if magnitude >= 4 else "Moderate" if magnitude >= 2 else "Weak"
+    return direction, f"{strength} · {move:+.1f}¢ / sample", magnitude
 
 def current_market(markets):
     now = datetime.now(timezone.utc)
@@ -164,12 +224,12 @@ def render_card(name, series, emoji):
         except (requests.RequestException, ValueError) as exc:
             st.error("Kalshi data unavailable")
             st.caption(f"{series}: {exc}")
-            return "Unavailable"
+            return {"label": "Unavailable", "magnitude": 0, "direction": "—"}
         m = current_market(markets)
         if not m:
             st.warning("No open 15-minute contract returned")
             st.caption(f"Series: {series}. Confirm the series ticker and availability on Kalshi.")
-            return "No market"
+            return {"label": "No market", "magnitude": 0, "direction": "—"}
         ticker = m.get("ticker", series)
         st.caption(m.get("title") or ticker)
         st.caption(f"Contract: {ticker}")
@@ -183,6 +243,13 @@ def render_card(name, series, emoji):
             st.metric("⏱️ Time remaining", f"{remaining // 60:02d}:{remaining % 60:02d}")
         else:
             st.metric("⏱️ Time remaining", "—")
+        if closing:
+            remaining_seconds = max(0, int((closing - now).total_seconds()))
+            if remaining_seconds <= 60:
+                st.error("⏳ FINAL MINUTE — signals can change quickly")
+            elif remaining_seconds <= 180:
+                st.warning("⏳ Less than 3 minutes remain")
+        st.markdown("<span class='yes-pill'>🟢 YES</span> &nbsp;&nbsp; <span class='no-pill'>🔴 NO</span>", unsafe_allow_html=True)
         st.markdown("**Live Kalshi quotes**")
         a, b = st.columns(2)
         a.metric("YES bid", cents(price(m, "yes_bid_dollars", "yes_bid")))
@@ -201,12 +268,28 @@ def render_card(name, series, emoji):
         else:
             st.caption(f"{label} · {detail}")
         st.caption(f"Samples: {count} · Source: {source}")
+        direction, strength, magnitude = momentum_stats(m)
+        st.markdown(f"**Momentum:** {direction} · {strength}")
+        st.markdown("**📈 YES price trend & radar movements**")
+        quote_samples = st.session_state.quote_history.get(ticker, [])
+        if len(quote_samples) >= 2:
+            # Each point is a sampled Kalshi quote, not a continuous trade-price feed.
+            chart_rows = [
+                {"Time": sample_time.astimezone(CENTRAL), "YES price (¢)": round(sample_price * 100, 2)}
+                for sample_time, sample_price, _ in quote_samples
+            ]
+            st.line_chart(chart_rows, x="Time", y="YES price (¢)", height=190, use_container_width=True)
+            st.caption("Rolling YES quote samples · newest at right · a rising line means YES became more expensive")
+        else:
+            st.caption("Chart warming up — keep this page open for at least two refreshes.")
+        st.markdown("**Last 10 settled markets**")
+        recent_arrows(series)
         with st.expander("Contract details and rules"):
             st.write(f"Market ticker: {ticker}")
             st.write(f"Closes (Central): {closing.astimezone(CENTRAL):%b %d, %I:%M:%S %p %Z}" if closing else "Close time not provided")
             st.write(m.get("rules_primary") or "Primary rules not included in response; check Kalshi.")
             st.write(m.get("rules_secondary") or "")
-        return label
+        return {"label": label, "magnitude": magnitude, "direction": direction}
 
 
 st.title("📡 Kalshi Market Command Center")
@@ -226,7 +309,39 @@ with right:
 st.subheader("🚨 Flip Radar — All Markets")
 summary_cols = st.columns(4)
 for col, (name, status) in zip(summary_cols, sorted(statuses, key=lambda s: [x[0] for x in SERIES].index(s[0]))):
-    col.metric(name, status)
+    col.metric(name, status["label"])
+
+st.subheader("📊 All-market momentum comparison")
+st.caption("Latest absolute change in YES quote price, in cents per sample. Taller bars mean larger recent movement, not better trade odds.")
+momentum_chart = [
+    {"Market": name, "Movement (¢)": round(status["magnitude"], 2)}
+    for name, status in sorted(statuses, key=lambda x: [item[0] for item in SERIES].index(x[0]))
+]
+st.bar_chart(momentum_chart, x="Market", y="Movement (¢)", height=250, use_container_width=True)
+
+st.subheader("📉 Recent settled results comparison")
+st.caption("Shows counts of YES and NO outcomes among up to 10 recent settled contracts for each series. These are contract outcomes, not asset up/down moves.")
+result_counts = []
+for series_name, series_ticker, _ in SERIES:
+    try:
+        recent = fetch_recent_results(series_ticker)
+    except (requests.RequestException, ValueError):
+        recent = []
+    result_counts.append({
+        "Market": series_name,
+        "YES settled": sum(str(m.get("result", "")).lower() == "yes" for m in recent),
+        "NO settled": sum(str(m.get("result", "")).lower() == "no" for m in recent),
+    })
+if any(row["YES settled"] or row["NO settled"] for row in result_counts):
+    st.bar_chart(result_counts, x="Market", y=["YES settled", "NO settled"], height=250, use_container_width=True)
+else:
+    st.caption("Waiting for settled result data from Kalshi.")
+
+st.markdown("**Momentum ranking**")
+ranked = sorted(statuses, key=lambda item: item[1]["magnitude"], reverse=True)
+for index, (name, stat) in enumerate(ranked, 1):
+    st.write(f"{index}. **{name}** — {stat['direction']} · {stat['magnitude']:.1f}¢ latest change")
+st.caption("Rankings measure absolute YES quote movement between samples, not expected profitability or win probability.")
 
 st.markdown("**Recent dashboard alerts**")
 if st.session_state.radar_events:
@@ -236,6 +351,7 @@ if st.session_state.radar_events:
 else:
     st.caption("No alerts yet. Keep the dashboard open for several refreshes.")
 
+st.caption("Recent-market arrows show Kalshi settlement results: YES ↑ / NO ↓. They do not show the direction of the underlying asset price. If Kalshi has not returned a result, it is omitted.")
 st.caption("Radar thresholds: direction change ≥0.5¢ each way; sudden move ≥" + str(sudden_cents) + "¢ per sample. Quote history lasts only for this Streamlit session. These are price-movement observations, not trading recommendations.")
 st.caption(f"Updated: {datetime.now(CENTRAL):%b %d, %Y · %I:%M:%S %p %Z}")
 st_autorefresh(interval=refresh_seconds * 1000, key="kalshi_grid_refresh")

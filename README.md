@@ -1,30 +1,25 @@
-# Kalshi Market Command Center + Flip Radar
+# Kalshi Market Command Center — Flip Radar Plus
 
-A read-only Streamlit dashboard with a responsive 2×2 layout for Bitcoin, Gold, Silver, and WTI Oil 15-minute markets.
+Read-only Streamlit dashboard for Bitcoin, Gold, Silver and WTI Oil 15-minute Kalshi contracts.
 
-## Update your existing GitHub + Streamlit app
+## New features
+- Responsive 2×2 market cards with green YES and red NO labels.
+- Momentum direction, strength, and latest movement ranking. Strength is a descriptive magnitude band, not a forecast.
+- Alerts for direction flips, sudden quote moves and final-minute countdown warnings.
+- Last 10 settled contract results per market shown as arrows: ↑ YES / ↓ NO, oldest to newest. These arrows represent the Kalshi contract result, not the underlying asset price direction.
+- Dashboard-only alerts, no API keys, no trading, no order placement.
 
-1. Download and unzip the package.
-2. Open the **main page** of your existing GitHub repository (not a nested folder).
-3. Open the existing root `app.py`, click the pencil icon, replace all its text with the new `app.py`, and **Commit changes**.
-4. Open the existing root `requirements.txt` and make sure it matches the included `requirements.txt`. Commit if you changed it.
-5. Open your Streamlit Community Cloud app and wait for the new deployment. Refresh the page.
-6. The new layout will display all four markets, plus dashboard-only Flip Radar alerts.
+## Deploy
+Replace **root-level** `app.py` and `requirements.txt` in the existing GitHub repo. Commit changes and allow Streamlit Community Cloud to redeploy. Do not upload an extra nested folder.
 
-**Do not upload the ZIP or its enclosing folder into your repository.** The two files should sit at the repository root where your current Streamlit app points.
+## Notes
+Requires `GET /markets` to return contracts for the configured Kalshi series tickers. Settled results require the API to return `result: yes` or `result: no`; missing results are omitted. Requests for settled results are cached for 60 seconds. Quotes cached for 8 seconds. Session quote history resets on app restart. No guarantee that API series tickers and response fields remain unchanged.
 
-## How the radar works
+Signal strength: Weak (<2¢), Moderate (2–<4¢), Strong (≥4¢) absolute YES quote movement per sample. A stronger signal is not necessarily a better trade. No statistical validation has been performed.
 
-- Monitors the nearest currently open contract in each of four configured series.
-- Samples the Kalshi YES bid/ask midpoint (or last YES price if midpoint is missing).
-- Flags direction reversals when the midpoint moves by at least 0.5¢ in opposite directions across consecutive samples.
-- Flags a sudden move when the price changes by at least 4¢ between samples (adjustable in sidebar).
-- Only new samples generate new events. History is session-only and resets when the app session restarts.
-- No Kalshi credentials, no trades, no external alerts.
-
-## Important limitations
-
-- Live API behavior and all series identifiers have **not** been verified against Kalshi in this environment. If a panel says no open contract, confirm the series ticker and contract availability on Kalshi.
-- The contract quote is **not** the underlying asset spot price. A strike shown in a contract may be missing or formatted differently depending on its market fields.
-- Price movement alerts are not a validated forecast or financial advice.
-- Streamlit refresh is best-effort and can pause when a browser tab sleeps.
+## Charts
+- Each market card now includes a live-updating line chart of sampled YES contract quote prices (in cents).
+- A comparison bar chart shows recent YES quote movement across Bitcoin, Gold, Silver, and WTI Oil.
+- A results chart counts YES and NO settlements among up to 10 recent completed contracts per market, when available.
+- Charts are based on public Kalshi market data and local Streamlit session history; they are not predictions, continuous tick charts, or automated trades.
+- Chart history resets when the Streamlit session restarts or the current contract rolls to a new ticker.
