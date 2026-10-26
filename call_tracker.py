@@ -147,7 +147,7 @@ def get_official_result(ticker):
     result = str(m.get("result") or "").strip().lower()
     status = str(m.get("status") or "").strip().lower()
     # Only official settled result; never grade from close, prices, or expired status alone.
-    if status != "settled" or result not in ("yes", "no"):
+    if status not in ("settled", "finalized") or result not in ("yes", "no"):
         return None
     return result
 
