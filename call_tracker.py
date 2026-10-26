@@ -51,10 +51,17 @@ def candlestick_yes_is_at_least_target(m):
     rules = " ".join(str(m.get(k) or "") for k in ("rules_primary", "rules_secondary"))
     rules = " ".join(rules.lower().split())
     asset = re.escape(series_assets[series])
+    # Kalshi uses both fixed numeric targets and a starting Pyth candle reference.
+    # Require explicit YES settlement language and the expected asset/series.
+    fixed_target = r"\$?\d[\d,]*(?:\.\d+)?\b"
+    pyth_symbol = {"KXGOLD15M": "gold", "KXSILVER15M": "silver", "KXWTI15M": "pythoil"}[series]
+    reference_target = (
+        rf"the close price of the 1-minute pyth {pyth_symbol} candlestick\b"
+    )
     return bool(re.search(
         rf"\bif the close price of the 1-minute candlestick for {asset}\b"
-        rf".{{0,180}}?\bis at least\s+\$?\d[\d,]*(?:\.\d+)?\b"
-        rf".{{0,150}}?\bthen the market resolves to yes\b",
+        rf".{{0,240}}?\bis at least\s+(?:{fixed_target}|{reference_target})"
+        rf".{{0,240}}?\bthen the market resolves to yes\b",
         rules,
     ))
 
