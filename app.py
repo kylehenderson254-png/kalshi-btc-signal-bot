@@ -486,7 +486,7 @@ else:
             st.info("No calls locked yet. The app must be running in the last five minutes of an eligible market to record one.")
     for message in st.session_state.get("tracker_activity", []):
         if "error" in message.lower():
-            st.warning(message)
+st.info(message)
     st.caption("Calls are locked once per contract ticker; no later price changes overwrite them. Dashboard scans only while open unless an external scheduler runs worker.py.")
 
 st.subheader("🚨 Flip Radar — All Markets")
