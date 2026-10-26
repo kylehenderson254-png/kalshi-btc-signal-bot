@@ -1,165 +1,287 @@
-import math
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from collections import deque
 
-import pandas as pd
 import requests
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 TZ = ZoneInfo("America/Chicago")
-BINANCE_BASE = "https://data-api.binance.vision"
+API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
+HISTORY_LIMIT = 12
+SUDDEN_MOVE_THRESHOLD = 0.04  # 4 probability points = 4¢ on a $1 contract
 
-st.set_page_config(page_title="BTC 15-Minute Signal", page_icon="₿", layout="centered")
+SERIES = [
+    ("Bitcoin", "KXBTC15M", "₿"),
+    ("Gold", "KXGOLD15M", "🥇"),
+    ("Silver", "KXSILVER15M", "🥈"),
+    ("WTI Oil", "KXWTI15M", "🛢️"),
+]
 
-st.title("₿ BTC Target Signal")
-st.caption("Experimental probability estimate • Signals only • No orders placed")
+st.set_page_config(page_title="Kalshi 15-Minute Market Monitor", page_icon="📈", layout="centered")
+st.title("📈 Kalshi 15-Minute Market Monitor")
+st.caption("Read-only market monitor • Dashboard-only Flip Radar • No orders placed")
 
 st.info(
-    "This first version uses a simple statistical baseline, not a trained or validated AI model. "
-    "Its probability estimates are assumptions and may be poorly calibrated. Use it for observation "
-    "and paper testing only."
+    "Tracks Kalshi's available 15-minute contracts and their YES/NO quotes. Flip Radar watches changes in the "
+    "YES quote midpoint across dashboard refreshes and flags possible reversals or sudden moves. These are "
+    "price-movement alerts, not predictions of the final outcome."
 )
 
 with st.sidebar:
-    st.header("Contract settings")
-    target = st.number_input(
-        "Settlement target (USD)",
-        min_value=1.0,
-        value=85000.0,
-        step=50.0,
-        format="%.2f",
-        help="Enter the exact dollar target shown in your Kalshi contract."
-    )
-    now_local = datetime.now(TZ).replace(tzinfo=None, second=0, microsecond=0)
-    settlement_local = st.datetime_input(
-        "Contract settlement time (Central)",
-        value=now_local + pd.Timedelta(minutes=15),
-        help="Choose the actual settlement time shown by the contract. Central Time is used."
-    )
-    threshold = st.slider(
-        "Minimum probability for a directional signal",
-        min_value=50, max_value=80, value=60, step=1
-    ) / 100
-    refresh_seconds = st.selectbox("Refresh interval", [10, 15, 30, 60], index=1)
+    st.header("Dashboard")
+    refresh_seconds = st.selectbox("Auto-refresh interval", [10, 15, 30, 60], index=1)
+    st.caption("Flip Radar compares quotes between refreshes. Keep this page open to build its short-term history.")
+    st.caption("Sudden-move threshold: 4¢ change in the YES quote midpoint between refreshes.")
+
+# Session-only history: it resets if the browser session/app restarts.
+if "flip_history" not in st.session_state:
+    st.session_state.flip_history = {}
+if "flip_alerts" not in st.session_state:
+    st.session_state.flip_alerts = {}
 
 @st.cache_data(ttl=8, show_spinner=False)
-def get_market_data():
-    ticker_resp = requests.get(
-        f"{BINANCE_BASE}/api/v3/ticker/price",
-        params={"symbol": "BTCUSDT"},
-        timeout=8
+def get_active_markets(series_ticker):
+    response = requests.get(
+        f"{API_BASE}/markets",
+        params={"series_ticker": series_ticker, "status": "open", "limit": 1000},
+        timeout=12,
     )
-    ticker_resp.raise_for_status()
-    spot = float(ticker_resp.json()["price"])
+    response.raise_for_status()
+    data = response.json()
+    markets = data.get("markets", [])
+    now = datetime.now().astimezone()
 
-    candles_resp = requests.get(
-        f"{BINANCE_BASE}/api/v3/klines",
-        params={"symbol": "BTCUSDT", "interval": "1m", "limit": 120},
-        timeout=8
-    )
-    candles_resp.raise_for_status()
-    raw = candles_resp.json()
-    df = pd.DataFrame(raw, columns=[
-        "open_time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_volume", "trades", "taker_base",
-        "taker_quote", "ignore"
-    ])
-    df["close"] = df["close"].astype(float)
-    df["volume"] = df["volume"].astype(float)
-    # Ignore the currently forming candle for the volatility/momentum estimate.
-    df = df.iloc[:-1].copy()
-    return spot, df
+    def close_time(m):
+        value = m.get("close_time") or m.get("latest_expiration_time") or ""
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
 
-def normal_cdf(z):
-    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+    live = []
+    for market in markets:
+        ct = close_time(market)
+        if ct is None or ct > now:
+            live.append(market)
+    live.sort(key=lambda m: close_time(m) or now)
+    return live
 
-try:
-    spot, candles = get_market_data()
+
+def as_float(value):
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def fmt_dollars(value):
+    if value is None or value == "":
+        return "Not provided"
+    try:
+        return f"${float(value):,.2f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def fmt_contract_price(value):
+    number = as_float(value)
+    if number is None:
+        return "—"
+    return f"{number * 100:.1f}¢"
+
+
+def fmt_market_price(market, dollars_key, cents_key):
+    """Prefer Kalshi's dollar-denominated field; otherwise display integer cents correctly."""
+    dollars = as_float(market.get(dollars_key))
+    if dollars is not None:
+        return fmt_contract_price(dollars)
+    cents = as_float(market.get(cents_key))
+    if cents is not None:
+        return f"{cents:.1f}¢"
+    return "—"
+
+
+def parse_time(value):
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return dt.astimezone(TZ)
+    except (ValueError, TypeError):
+        return None
+
+
+def market_target(m):
+    for key in ("floor_strike", "functional_strike", "custom_strike", "cap_strike"):
+        if m.get(key) not in (None, ""):
+            return fmt_dollars(m[key])
+    return m.get("yes_sub_title") or m.get("subtitle") or "Check contract rules"
+
+
+def quote_midpoint(m):
+    """Return YES midpoint as a 0..1 probability-like contract price, when available."""
+    bid = as_float(m.get("yes_bid_dollars"))
+    ask = as_float(m.get("yes_ask_dollars"))
+    last = as_float(m.get("last_price_dollars"))
+    if bid is not None and ask is not None and 0 <= bid <= 1 and 0 <= ask <= 1 and ask >= bid:
+        return (bid + ask) / 2, "YES bid/ask midpoint"
+    if last is not None and 0 <= last <= 1:
+        return last, "last YES price (midpoint unavailable)"
+    # Some API responses may only expose integer cent fields.
+    bid_cents = as_float(m.get("yes_bid"))
+    ask_cents = as_float(m.get("yes_ask"))
+    if bid_cents is not None and ask_cents is not None and 0 <= bid_cents <= 100 and 0 <= ask_cents <= 100 and ask_cents >= bid_cents:
+        return ((bid_cents + ask_cents) / 2) / 100, "YES bid/ask midpoint"
+    last_cents = as_float(m.get("last_price"))
+    if last_cents is not None and 0 <= last_cents <= 100:
+        return last_cents / 100, "last YES price (midpoint unavailable)"
+    return None, "No usable YES quote yet"
+
+
+def record_and_detect_flip(series_name, market):
+    ticker = market.get("ticker") or f"{series_name}:unknown"
+    price, source = quote_midpoint(market)
     now = datetime.now(TZ)
-    settle = settlement_local.replace(tzinfo=TZ)
-    seconds_left = (settle - now).total_seconds()
-    minutes_left = max(seconds_left / 60.0, 0.0)
+    history = st.session_state.flip_history.setdefault(ticker, [])
+    if price is not None:
+        # Avoid duplicating identical samples when reruns occur before the API quote changes.
+        if not history or (now - history[-1][0]).total_seconds() >= max(5, refresh_seconds - 2):
+            history.append((now, price))
+            del history[:-HISTORY_LIMIT]
 
-    returns = candles["close"].pct_change().dropna()
-    recent = returns.tail(15)
-    if len(recent) < 10:
-        st.error("Not enough recent BTC candles to estimate volatility. Try again shortly.")
-        st.stop()
+    alert = None
+    if len(history) >= 3:
+        older = history[-2][1] - history[-3][1]
+        latest = history[-1][1] - history[-2][1]
+        if older > 0.005 and latest < -0.005:
+            alert = ("🔻 Bearish flip", f"YES midpoint turned down after rising ({latest * 100:+.1f}¢ on latest sample).")
+        elif older < -0.005 and latest > 0.005:
+            alert = ("🔺 Bullish flip", f"YES midpoint turned up after falling ({latest * 100:+.1f}¢ on latest sample).")
 
-    # A deliberately simple baseline: recent mean return is drift; recent standard
-    # deviation is one-minute volatility. This is not a validated forecast.
-    drift_per_min = float(recent.mean())
-    sigma_per_min = float(recent.std(ddof=1))
+    if len(history) >= 2:
+        move = history[-1][1] - history[-2][1]
+        if abs(move) >= SUDDEN_MOVE_THRESHOLD:
+            direction = "jumped up" if move > 0 else "dropped"
+            sudden = ("⚡ Sudden move", f"YES midpoint {direction} {abs(move) * 100:.1f}¢ between samples.")
+            # Prefer showing a sudden move if it occurred on this latest sample.
+            if alert:
+                alert = (f"{alert[0]} + ⚡", f"{alert[1]} Also, midpoint {direction} {abs(move) * 100:.1f}¢.")
+            else:
+                alert = sudden
 
-    st.subheader("Live market snapshot")
-    c1, c2 = st.columns(2)
-    c1.metric("BTC spot (Binance BTC/USDT)", f"${spot:,.2f}")
-    c2.metric("Target", f"${target:,.2f}", delta=f"${spot-target:,.2f} vs target")
+    if alert:
+        st.session_state.flip_alerts[ticker] = {
+            "name": series_name,
+            "ticker": ticker,
+            "label": alert[0],
+            "detail": alert[1],
+            "time": now,
+            "price": price,
+        }
+    return price, source, history, alert
 
-    if seconds_left <= 0:
-        st.warning("The selected settlement time has passed. Choose the next contract's actual settlement time.")
-        st.stop()
 
-    # Approximate future log-price distribution; floor volatility to avoid division by zero.
-    log_distance = math.log(target / spot)
-    horizon = max(minutes_left, 1e-6)
-    sigma_horizon = max(sigma_per_min, 1e-8) * math.sqrt(horizon)
-    expected_log_return = drift_per_min * horizon
-    z = (log_distance - expected_log_return) / sigma_horizon
-    p_above = 1.0 - normal_cdf(z)
-    p_below = 1.0 - p_above
+def render_market(name, ticker, emoji):
+    st.subheader(f"{emoji} {name}")
+    try:
+        markets = get_active_markets(ticker)
+    except requests.RequestException as exc:
+        st.error(f"Could not load {name} from Kalshi: {exc}")
+        return
 
-    st.subheader("Estimated finish probability")
-    a, b = st.columns(2)
-    a.metric("Finish ABOVE target", f"{p_above*100:.1f}%")
-    b.metric("Finish BELOW target", f"{p_below*100:.1f}%")
-    st.progress(min(max(p_above, 0.0), 1.0), text="Estimated probability of finishing above target")
+    if not markets:
+        st.warning(f"No open market was returned for {ticker}. The series ticker may differ, no contract may be open, or the API may be temporarily unavailable.")
+        st.caption(f"Series requested: {ticker}")
+        return
 
-    if p_above >= threshold:
-        signal = "UP / ABOVE"
-        st.success(f"Model signal: {signal} — {p_above:.1%} estimated probability")
-    elif p_below >= threshold:
-        signal = "DOWN / BELOW"
-        st.warning(f"Model signal: {signal} — {p_below:.1%} estimated probability")
-    else:
-        signal = "NO TRADE"
-        st.info("Model signal: NO TRADE — neither side meets your probability threshold.")
+    for idx, m in enumerate(markets[:3]):
+        close_dt = parse_time(m.get("close_time") or m.get("latest_expiration_time"))
+        open_dt = parse_time(m.get("open_time"))
+        label = "Nearest closing contract" if idx == 0 else f"Upcoming contract {idx + 1}"
+        with st.container(border=True):
+            st.markdown(f"**{label}**")
+            st.write(m.get("title") or m.get("subtitle") or ticker)
+            market_ticker = m.get("ticker", ticker)
+            st.caption(f"Market ticker: {market_ticker}")
+            a, b = st.columns(2)
+            a.metric("YES bid", fmt_market_price(m, "yes_bid_dollars", "yes_bid"))
+            b.metric("YES ask", fmt_market_price(m, "yes_ask_dollars", "yes_ask"))
+            c, d = st.columns(2)
+            c.metric("NO bid", fmt_market_price(m, "no_bid_dollars", "no_bid"))
+            d.metric("NO ask", fmt_market_price(m, "no_ask_dollars", "no_ask"))
+            e, f = st.columns(2)
+            e.metric("Target / strike", market_target(m))
+            f.metric("Last price", fmt_market_price(m, "last_price_dollars", "last_price"))
 
-    st.caption(
-        f"Time remaining: {int(seconds_left // 60)}m {int(seconds_left % 60)}s • "
-        f"Settlement time: {settle.strftime('%Y-%m-%d %I:%M:%S %p %Z')}"
-    )
+            if idx == 0:
+                price, source, history, alert = record_and_detect_flip(name, m)
+                g, h = st.columns(2)
+                g.metric("YES midpoint", fmt_contract_price(price), help=source)
+                h.metric("Radar samples", len(history))
+                if alert:
+                    st.warning(f"{alert[0]} — {alert[1]}")
+                elif len(history) < 3:
+                    st.caption("Flip Radar warming up: collecting quote samples.")
+                else:
+                    st.caption("No new flip or sudden-move alert on the latest sample.")
 
-    with st.expander("Model details and limitations"):
-        st.write(f"Recent 15-minute average return per minute: {drift_per_min*100:.5f}%")
-        st.write(f"Recent one-minute return volatility: {sigma_per_min*100:.5f}%")
-        st.write(f"Estimated probability threshold: {threshold:.0%}")
-        st.write(
-            "The estimate assumes recent returns and volatility remain representative until settlement. "
-            "It does not yet use Kalshi prices, official settlement feeds, order-book imbalance, "
-            "or a trained model. Binance BTC/USDT may not match the contract's settlement reference. "
-            "Do not treat this as a reliable trading edge."
-        )
+            if open_dt:
+                st.caption(f"Opens: {open_dt.strftime('%b %d, %I:%M:%S %p %Z')}")
+            if close_dt:
+                seconds = int((close_dt - datetime.now(TZ)).total_seconds())
+                if seconds > 0:
+                    st.caption(f"Closes: {close_dt.strftime('%b %d, %I:%M:%S %p %Z')} • {seconds//60}m {seconds%60}s remaining")
+                else:
+                    st.caption(f"Close time: {close_dt.strftime('%b %d, %I:%M:%S %p %Z')}")
+            with st.expander("Contract rules / settlement details"):
+                st.write(m.get("rules_primary") or "Primary rules not included in this API response.")
+                st.write(m.get("rules_secondary") or "Secondary rules not included in this API response.")
+                st.write(f"Status: {m.get('status', 'not provided')}")
+                st.write(f"Result: {m.get('result') or 'Not settled'}")
 
-    st.subheader("Safe testing checklist")
-    st.markdown(
-        "- Record each forecast and the exact time it was made.\n"
-        "- After settlement, record the official contract outcome.\n"
-        "- Track calibration and Brier score over many non-overlapping windows.\n"
-        "- Compare against a simple baseline before considering any live use.\n"
-        "- Do not add automatic orders or put API secrets in this dashboard."
-    )
+    st.caption("Quotes shown are Kalshi contract prices (YES/NO), not the underlying asset's dollar price.")
 
-except requests.RequestException as exc:
-    st.error(f"Could not load public BTC market data: {exc}")
-except (ValueError, KeyError, IndexError) as exc:
-    st.error(f"Market data response was unexpected: {exc}")
 
-st.caption("Public market data source: Binance. Refreshing this page does not place trades.")
+st.subheader("📡 Flip Radar")
+st.caption("Dashboard-only alerts • Uses live Kalshi YES quotes • No trades or external notifications")
+radar_cols = st.columns(2)
+for i, (name, ticker, emoji) in enumerate(SERIES):
+    with radar_cols[i % 2]:
+        st.metric(f"{emoji} {name}", "Scanning" if ticker else "Unavailable")
 
-# Streamlit's built-in auto-refresh component can be added later if desired.
-try:
-    from streamlit_autorefresh import st_autorefresh
-    st_autorefresh(interval=refresh_seconds * 1000, key="btc_refresh")
-except ImportError:
-    st.caption("For automatic refresh, install all packages from requirements.txt.")
+for name, ticker, emoji in SERIES:
+    render_market(name, ticker, emoji)
+
+st.divider()
+st.subheader("🚨 Recent Flip Radar Alerts")
+alerts = sorted(st.session_state.flip_alerts.values(), key=lambda a: a["time"], reverse=True)
+if alerts:
+    for alert in alerts[:12]:
+        with st.container(border=True):
+            st.markdown(f"**{alert['label']} · {alert['name']}**")
+            st.write(alert["detail"])
+            st.caption(f"{alert['ticker']} • {alert['time'].strftime('%I:%M:%S %p %Z')}")
+else:
+    st.info("No flips or sudden moves flagged yet. The radar needs a few refreshes with usable quotes before it can compare direction.")
+
+st.divider()
+st.subheader("How to read Flip Radar")
+st.markdown(
+    "- **Bullish flip:** YES midpoint moved down on a prior sample and then up on the latest sample.\n"
+    "- **Bearish flip:** YES midpoint moved up on a prior sample and then down on the latest sample.\n"
+    "- **Sudden move:** YES midpoint changed by at least 4¢ between two dashboard samples.\n\n"
+    "These labels describe recent contract-price movement only. They do not mean the contract will settle YES or NO. "
+    "History is kept in this browser session and resets when the session restarts."
+)
+st.warning(
+    "The radar is a simple monitoring aid, not a validated forecasting model. Market tickers, fields, availability, "
+    "and settlement rules can change. Confirm contract rules before using quotes to make decisions."
+)
+st.caption(f"Last page render: {datetime.now(TZ).strftime('%Y-%m-%d %I:%M:%S %p %Z')}")
+
+st_autorefresh(interval=refresh_seconds * 1000, key="kalshi_refresh")
