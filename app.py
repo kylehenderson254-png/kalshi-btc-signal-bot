@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import requests
+import html
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
@@ -26,11 +27,19 @@ st.markdown("""<style>
 .down-arrow {color:#dc2626;font-weight:800;}
 .block-container {max-width: 1280px; padding-top: 1.5rem; padding-bottom: 2rem;}
 [data-testid="stMetric"] {background: rgba(128,128,128,.06); border-radius: 10px; padding: 10px 12px;}
+.quote-tile {border-radius: 14px; padding: 12px; border: 1px solid; min-height: 125px;}
+.yes-tile {background: rgba(22,163,74,.12); border-color: rgba(22,163,74,.48);}
+.no-tile {background: rgba(220,38,38,.12); border-color: rgba(220,38,38,.48);}
+.quote-title {font-size: 1.12rem; font-weight: 850; margin-bottom: 10px;}
+.yes-tile .quote-title, .yes-tile b {color: #22c55e;}
+.no-tile .quote-title, .no-tile b {color: #ef4444;}
+.quote-row {display:flex; justify-content:space-between; align-items:center; padding:3px 0; font-size:.93rem; gap:8px;}
+.quote-row b {font-size:1.12rem;}
 </style>""", unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("⚙️ Radar settings")
-    refresh_seconds = st.selectbox("Refresh every", [10, 15, 30, 60], index=1, format_func=lambda s: f"{s} seconds")
+    refresh_seconds = st.selectbox("Refresh every", [3, 5, 10, 15], index=0, format_func=lambda s: f"{s} seconds")
     sudden_cents = st.slider("Sudden move threshold (¢)", 2, 15, 4)
     st.caption("Alerts are shown only on this dashboard. Keep the page open to collect samples.")
     if st.button("Clear radar history", use_container_width=True):
@@ -84,7 +93,7 @@ def target(m):
     return m.get("yes_sub_title") or m.get("subtitle") or "See contract rules"
 
 
-@st.cache_data(ttl=8, show_spinner=False)
+@st.cache_data(ttl=2, show_spinner=False)
 def fetch_markets(series_ticker):
     response = requests.get(
         f"{API_BASE}/markets",
@@ -179,7 +188,7 @@ def scan(m, name):
     latest_label = "Scanning"
     detail = "Collecting price samples"
     new_sample = False
-    if val is not None and (not hist or (now - hist[-1][0]).total_seconds() >= max(5, refresh_seconds - 2)):
+    if val is not None and (not hist or (now - hist[-1][0]).total_seconds() >= max(2, refresh_seconds - 1)):
         # Do not compare last trade prices with midpoints; those are different price sources.
         if hist and hist[-1][2] != source:
             hist.clear()
@@ -240,7 +249,8 @@ def render_card(name, series, emoji):
             st.info("Upcoming contract — not yet open")
         if closing:
             remaining = max(0, int((closing - now).total_seconds()))
-            st.metric("⏱️ Time remaining", f"{remaining // 60:02d}:{remaining % 60:02d}")
+            st.metric("⏱️ Kalshi contract countdown", f"{remaining // 60:02d}:{remaining % 60:02d}")
+            st.caption(f"Closes at {closing.astimezone(CENTRAL):%I:%M:%S %p %Z} · refreshed every {refresh_seconds}s")
         else:
             st.metric("⏱️ Time remaining", "—")
         if closing:
@@ -249,14 +259,28 @@ def render_card(name, series, emoji):
                 st.error("⏳ FINAL MINUTE — signals can change quickly")
             elif remaining_seconds <= 180:
                 st.warning("⏳ Less than 3 minutes remain")
-        st.markdown("<span class='yes-pill'>🟢 YES</span> &nbsp;&nbsp; <span class='no-pill'>🔴 NO</span>", unsafe_allow_html=True)
-        st.markdown("**Live Kalshi quotes**")
-        a, b = st.columns(2)
-        a.metric("YES bid", cents(price(m, "yes_bid_dollars", "yes_bid")))
-        b.metric("YES ask", cents(price(m, "yes_ask_dollars", "yes_ask")))
-        c, d = st.columns(2)
-        c.metric("NO bid", cents(price(m, "no_bid_dollars", "no_bid")))
-        d.metric("NO ask", cents(price(m, "no_ask_dollars", "no_ask")))
+        st.markdown("**Kalshi YES / NO bid and ask**")
+        yes_bid = cents(price(m, "yes_bid_dollars", "yes_bid"))
+        yes_ask = cents(price(m, "yes_ask_dollars", "yes_ask"))
+        no_bid = cents(price(m, "no_bid_dollars", "no_bid"))
+        no_ask = cents(price(m, "no_ask_dollars", "no_ask"))
+        # Visual quote tiles only. Not buttons: no click action and no trading API credentials.
+        yes_col, no_col = st.columns(2, gap="small")
+        with yes_col:
+            st.markdown(
+                f'<div class="quote-tile yes-tile"><div class="quote-title">🟢 YES</div>'
+                f'<div class="quote-row"><span>BID</span><b>{html.escape(yes_bid)}</b></div>'
+                f'<div class="quote-row"><span>ASK</span><b>{html.escape(yes_ask)}</b></div>'
+                f'</div>', unsafe_allow_html=True,
+            )
+        with no_col:
+            st.markdown(
+                f'<div class="quote-tile no-tile"><div class="quote-title">🔴 NO</div>'
+                f'<div class="quote-row"><span>BID</span><b>{html.escape(no_bid)}</b></div>'
+                f'<div class="quote-row"><span>ASK</span><b>{html.escape(no_ask)}</b></div>'
+                f'</div>', unsafe_allow_html=True,
+            )
+        st.caption("Quote display only · No trading actions")
         e, f = st.columns(2)
         e.metric("Target / strike", target(m))
         f.metric("Last YES", cents(price(m, "last_price_dollars", "last_price")))
@@ -293,7 +317,8 @@ def render_card(name, series, emoji):
 
 
 st.title("📡 Kalshi Market Command Center")
-st.caption("15-minute markets · Live Kalshi contract quotes · Dashboard-only Flip Radar · Read-only")
+st.caption("15-minute markets · Kalshi contract-aligned countdowns · Dashboard-only Flip Radar · Read-only")
+st.caption(f"⟳ Refresh interval: {refresh_seconds}s · API quotes may lag or be rate-limited · not a streaming connection")
 st.info("Radar flags YES-quote direction reversals and sudden moves. It does not predict settlement or execute trades.")
 
 # Streamlit columns collapse vertically on narrower screens.
@@ -353,5 +378,5 @@ else:
 
 st.caption("Recent-market arrows show Kalshi settlement results: YES ↑ / NO ↓. They do not show the direction of the underlying asset price. If Kalshi has not returned a result, it is omitted.")
 st.caption("Radar thresholds: direction change ≥0.5¢ each way; sudden move ≥" + str(sudden_cents) + "¢ per sample. Quote history lasts only for this Streamlit session. These are price-movement observations, not trading recommendations.")
-st.caption(f"Updated: {datetime.now(CENTRAL):%b %d, %Y · %I:%M:%S %p %Z}")
+st.caption(f"Last refresh: {datetime.now(CENTRAL):%b %d, %Y · %I:%M:%S %p %Z} · Contract countdowns align to Kalshi close timestamps; updates are not guaranteed every {refresh_seconds}s.")
 st_autorefresh(interval=refresh_seconds * 1000, key="kalshi_grid_refresh")
