@@ -98,6 +98,25 @@ def target(m):
 
 
 
+def comparison_yes_is_higher_or_equal(m):
+    """Verify a YES result for final >= initial 60-second CF Benchmarks average.
+
+    Match the explicit supplied Kalshi BRTI rule form; do not infer semantics
+    from a generic title, a strike, or unrelated asset contract.
+    """
+    rules = " ".join(str(m.get(k) or "") for k in ("rules_primary", "rules_secondary"))
+    rules = " ".join(rules.lower().split())
+    return bool(
+        "cf benchmarks" in rules
+        and re.search(
+            r"\bif\b.{0,300}\bsimple average\b.{0,300}"
+            r"\bis at least the simple average\b.{0,300}"
+            r"\bthen the market resolves to yes\b",
+            rules,
+        )
+    )
+
+
 def directional_labels(m):
     """Only rename YES/NO if the contract explicitly describes YES as above the target.
 
@@ -107,6 +126,8 @@ def directional_labels(m):
         "yes_sub_title", "yes_subtitle", "rules_primary", "rules_secondary"
     )).lower()
     yes_description = " ".join(yes_description.split())
+    if comparison_yes_is_higher_or_equal(m):
+        return "ABOVE OR EQUAL TARGET", "BELOW TARGET", True
     # Do not infer from generic "will price be above" question alone, since
     # a question does not establish the direction of YES in every contract.
     if re.search(r"\byes\s+(?:if|means|wins?\s+if|settles?\s+if)\s+.{0,100}\b(?:above|higher than|greater than|exceeds)\b", yes_description):

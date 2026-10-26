@@ -38,11 +38,30 @@ def quote(m, dollars, cents):
     return n / 100 if n is not None else None
 
 
+def comparison_yes_is_higher_or_equal(m):
+    """Verify a YES result for final >= initial 60-second CF Benchmarks average.
+
+    Match the explicit supplied Kalshi BRTI rule form; do not infer semantics
+    from a generic title, a strike, or unrelated asset contract.
+    """
+    rules = " ".join(str(m.get(k) or "") for k in ("rules_primary", "rules_secondary"))
+    rules = " ".join(rules.lower().split())
+    return bool(
+        "cf benchmarks" in rules
+        and re.search(
+            r"\bif\b.{0,300}\bsimple average\b.{0,300}"
+            r"\bis at least the simple average\b.{0,300}"
+            r"\bthen the market resolves to yes\b",
+            rules,
+        )
+    )
+
+
 def direction_verified(m):
     """Fail closed unless API rules explicitly map YES to above target."""
     rules = " ".join(str(m.get(k) or "") for k in ("rules_primary", "rules_secondary", "yes_sub_title", "yes_subtitle"))
     rules = " ".join(rules.lower().split())
-    return bool(
+    return comparison_yes_is_higher_or_equal(m) or bool(
         re.search(r"\byes\s+(?:if|means|wins?\s+if|settles?\s+if)\s+.{0,100}\b(?:above|higher than|greater than|exceeds)\b", rules)
         or re.search(r"\b(?:above|higher than|greater than|exceeds)\b.{0,70}\b(?:settles?\s+yes|results?\s+in\s+yes)\b", rules)
     )
