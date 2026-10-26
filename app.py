@@ -98,6 +98,27 @@ def target(m):
 
 
 
+def candlestick_yes_is_at_least_target(m):
+    """Verify the official Kalshi 15m Gold/Silver/WTI candlestick YES rule.
+
+    Do not rely on title/strike alone; only accept explicit settlement wording.
+    """
+    ticker = str(m.get("ticker") or "").upper()
+    series_assets = {"KXGOLD15M": "gold", "KXSILVER15M": "silver", "KXWTI15M": "wti oil"}
+    series = next((key for key in series_assets if ticker.startswith(key + "-")), None)
+    if not series:
+        return False
+    rules = " ".join(str(m.get(k) or "") for k in ("rules_primary", "rules_secondary"))
+    rules = " ".join(rules.lower().split())
+    asset = re.escape(series_assets[series])
+    return bool(re.search(
+        rf"\bif the close price of the 1-minute candlestick for {asset}\b"
+        rf".{{0,180}}?\bis at least\s+\$?\d[\d,]*(?:\.\d+)?\b"
+        rf".{{0,150}}?\bthen the market resolves to yes\b",
+        rules,
+    ))
+
+
 def comparison_yes_is_higher_or_equal(m):
     """Verify a YES result for final >= initial 60-second CF Benchmarks average.
 
@@ -126,7 +147,7 @@ def directional_labels(m):
         "yes_sub_title", "yes_subtitle", "rules_primary", "rules_secondary"
     )).lower()
     yes_description = " ".join(yes_description.split())
-    if comparison_yes_is_higher_or_equal(m):
+    if comparison_yes_is_higher_or_equal(m) or candlestick_yes_is_at_least_target(m):
         return "ABOVE OR EQUAL TARGET", "BELOW TARGET", True
     # Do not infer from generic "will price be above" question alone, since
     # a question does not establish the direction of YES in every contract.

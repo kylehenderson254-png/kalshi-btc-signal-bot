@@ -38,6 +38,27 @@ def quote(m, dollars, cents):
     return n / 100 if n is not None else None
 
 
+def candlestick_yes_is_at_least_target(m):
+    """Verify the official Kalshi 15m Gold/Silver/WTI candlestick YES rule.
+
+    Do not rely on title/strike alone; only accept explicit settlement wording.
+    """
+    ticker = str(m.get("ticker") or "").upper()
+    series_assets = {"KXGOLD15M": "gold", "KXSILVER15M": "silver", "KXWTI15M": "wti oil"}
+    series = next((key for key in series_assets if ticker.startswith(key + "-")), None)
+    if not series:
+        return False
+    rules = " ".join(str(m.get(k) or "") for k in ("rules_primary", "rules_secondary"))
+    rules = " ".join(rules.lower().split())
+    asset = re.escape(series_assets[series])
+    return bool(re.search(
+        rf"\bif the close price of the 1-minute candlestick for {asset}\b"
+        rf".{{0,180}}?\bis at least\s+\$?\d[\d,]*(?:\.\d+)?\b"
+        rf".{{0,150}}?\bthen the market resolves to yes\b",
+        rules,
+    ))
+
+
 def comparison_yes_is_higher_or_equal(m):
     """Verify a YES result for final >= initial 60-second CF Benchmarks average.
 
@@ -61,7 +82,7 @@ def direction_verified(m):
     """Fail closed unless API rules explicitly map YES to above target."""
     rules = " ".join(str(m.get(k) or "") for k in ("rules_primary", "rules_secondary", "yes_sub_title", "yes_subtitle"))
     rules = " ".join(rules.lower().split())
-    return comparison_yes_is_higher_or_equal(m) or bool(
+    return comparison_yes_is_higher_or_equal(m) or candlestick_yes_is_at_least_target(m) or bool(
         re.search(r"\byes\s+(?:if|means|wins?\s+if|settles?\s+if)\s+.{0,100}\b(?:above|higher than|greater than|exceeds)\b", rules)
         or re.search(r"\b(?:above|higher than|greater than|exceeds)\b.{0,70}\b(?:settles?\s+yes|results?\s+in\s+yes)\b", rules)
     )
