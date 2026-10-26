@@ -8,6 +8,7 @@ import re
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from call_tracker import store_from_secrets, process, candidate
+from pressure_radar import show_pressure_radar
 
 API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 CENTRAL = ZoneInfo("America/Chicago")
@@ -346,6 +347,7 @@ def render_card(name, series, emoji):
                 f'</div>', unsafe_allow_html=True,
             )
         st.caption("Quote display only · No trading actions · ABOVE maps to YES only when verified from contract rules")
+        show_pressure_radar(name, ticker)
         e, f = st.columns(2)
         e.metric("Target / strike", target(m))
         f.metric("Last YES", cents(price(m, "last_price_dollars", "last_price")))
