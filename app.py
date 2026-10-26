@@ -7,6 +7,7 @@ import html
 import re
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+from call_tracker import store_from_secrets, process, candidate
 
 API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 CENTRAL = ZoneInfo("America/Chicago")
@@ -200,6 +201,47 @@ def midpoint(m):
     return None, "No usable quote"
 
 
+def prediction_panel(m, verified_direction, remaining_seconds, ticker):
+    """Experimental market-implied directional lean; not an independent forecast."""
+    st.markdown("**🎯 Experimental settlement call**")
+    if not verified_direction:
+        st.info("No ABOVE/BELOW call: contract rules do not confirm that YES means ABOVE.")
+        return
+    bid = price(m, "yes_bid_dollars", "yes_bid")
+    ask = price(m, "yes_ask_dollars", "yes_ask")
+    if bid is None or ask is None or not (0 <= bid <= ask <= 1):
+        st.info("No call: both current YES bid and ask are needed for a comparable market quote.")
+        return
+    spread = ask - bid
+    if spread > 0.15 or (bid == 0 and ask == 1):
+        st.info("No call: the quote spread is too wide to provide a useful directional reading.")
+        return
+    implied_above = (bid + ask) / 2
+    implied_below = 1 - implied_above
+    # A deliberately conservative no-call zone, not a validated prediction model.
+    if implied_above >= 0.60:
+        call = "🟢 ABOVE TARGET"
+    elif implied_above <= 0.40:
+        call = "🔴 BELOW TARGET"
+    else:
+        call = "⚪ NO CLEAR CALL"
+    left, right = st.columns(2)
+    left.metric("Market-implied ABOVE", f"{implied_above:.0%}")
+    right.metric("Market-implied BELOW", f"{implied_below:.0%}")
+    st.markdown(f"**Current market-based lean: {call}**")
+    hist = st.session_state.quote_history.get(ticker, [])
+    if len(hist) >= 2:
+        change = (hist[-1][1] - hist[-2][1]) * 100
+        st.caption(f"Last sampled YES quote move: {change:+.1f}¢ · Quote spread: {spread * 100:.1f}¢")
+    else:
+        st.caption(f"Quote spread: {spread * 100:.1f}¢ · Momentum still warming up")
+    if remaining_seconds is not None:
+        st.caption(f"Time until contract close: {remaining_seconds // 60:02d}:{remaining_seconds % 60:02d}")
+    st.caption("Based on Kalshi's current YES bid/ask midpoint, not an independently trained prediction. "
+               "Percentages are market-price proxies, not calibrated win probabilities; fees, spreads and settlement details matter. "
+               "A call is not a recommendation to trade.")
+
+
 def scan(m, name):
     ticker = m.get("ticker", name)
     val, source = midpoint(m)
@@ -308,6 +350,39 @@ def render_card(name, series, emoji):
         e.metric("Target / strike", target(m))
         f.metric("Last YES", cents(price(m, "last_price_dollars", "last_price")))
         label, detail, count, source = scan(m, name)
+        st.markdown("**🌅 Early call — live preview (not locked)**")
+        if not closing or (opening and opening > now):
+            st.caption("Waiting for an active contract with a closing time.")
+        elif remaining > 300:
+            early_bid = price(m, "yes_bid_dollars", "yes_bid")
+            early_ask = price(m, "yes_ask_dollars", "yes_ask")
+            if not verified_direction:
+                st.caption("No early call: ABOVE/BELOW meaning is not verified from the contract rules.")
+            elif early_bid is None or early_ask is None or not (0 <= early_bid <= early_ask <= 1) or early_ask - early_bid > 0.15 or (early_bid == 0 and early_ask == 1):
+                st.caption("No early call: reliable YES bid/ask quotes are unavailable or spread is too wide.")
+            else:
+                early_mid = (early_bid + early_ask) / 2
+                if early_mid >= 0.60:
+                    st.success(f"EARLY LEAN: ABOVE TARGET ↑ · YES quote midpoint {early_mid * 100:.1f}¢")
+                elif early_mid <= 0.40:
+                    st.error(f"EARLY LEAN: BELOW TARGET ↓ · YES quote midpoint {early_mid * 100:.1f}¢")
+                else:
+                    st.info(f"EARLY LEAN: NO CLEAR CALL · YES quote midpoint {early_mid * 100:.1f}¢")
+                st.caption("Provisional signal: updates with quotes, can reverse, and is not graded. The separate 5-minute call is the only locked and graded prediction.")
+        else:
+            st.caption("Early preview window has ended. Check the 5-minute locked call below.")
+        prediction_panel(m, verified_direction, remaining if closing else None, ticker)
+        st.markdown("**🔒 Automatic 5-minute locked call**")
+        stored = st.session_state.get("locked_call_map", {}).get(ticker)
+        if stored:
+            label = "🟢 ABOVE" if stored["call"] == "ABOVE" else "🔴 BELOW"
+            st.markdown(f"**LOCKED: {label}** · {stored['status'].upper()}")
+            st.caption(f"Locked at {stored['locked_at']} · quote midpoint {stored['yes_midpoint'] * 100:.1f}¢")
+        elif st.session_state.get("tracker_enabled"):
+            row, reason = candidate(m, name, series)
+            st.caption("Eligible for automatic lock now" if row else (reason or "Waiting for lock"))
+        else:
+            st.caption("Persistent call tracking not configured; see README setup instructions.")
         st.divider()
         st.markdown("**📡 Flip Radar**")
         if label.startswith("🔺") or label.startswith("🔻") or label.startswith("⚡"):
@@ -339,10 +414,37 @@ def render_card(name, series, emoji):
         return {"label": label, "magnitude": magnitude, "direction": direction}
 
 
+# The database is required for genuine persistent win/loss statistics.
+try:
+    call_store = store_from_secrets(st.secrets)
+except Exception:
+    call_store = None
+st.session_state.tracker_enabled = call_store is not None
+if call_store:
+    try:
+        # Reuse cached Kalshi market responses; avoid duplicate requests on each refresh.
+        active_markets = {}
+        for _, series, _ in SERIES:
+            try:
+                active_markets[series] = current_market(fetch_markets(series))
+            except (requests.RequestException, ValueError):
+                active_markets[series] = None
+        st.session_state["tracker_activity"] = process(call_store, current_by_series=active_markets)
+        st.session_state["locked_call_rows"] = call_store.all()
+        st.session_state["locked_call_map"] = {r["ticker"]: r for r in st.session_state["locked_call_rows"]}
+    except (requests.RequestException, ValueError) as exc:
+        st.session_state["tracker_activity"] = [f"Call tracker storage error: {exc}"]
+        st.session_state["locked_call_rows"] = []
+        st.session_state["locked_call_map"] = {}
+else:
+    st.session_state["tracker_activity"] = []
+    st.session_state["locked_call_rows"] = []
+    st.session_state["locked_call_map"] = {}
+
 st.title("📡 Kalshi Market Command Center")
 st.caption("15-minute markets · Kalshi contract-aligned countdowns · Dashboard-only Flip Radar · Read-only")
 st.caption(f"⟳ Refresh interval: {refresh_seconds}s · API quotes may lag or be rate-limited · not a streaming connection")
-st.info("Radar flags YES-quote direction reversals and sudden moves. It does not predict settlement or execute trades.")
+st.info("Radar detects quote reversals. The experimental settlement call reflects Kalshi market-implied pricing, not a validated independent forecast. No trades are executed.")
 
 # Streamlit columns collapse vertically on narrower screens.
 left, right = st.columns(2, gap="medium")
@@ -353,6 +455,39 @@ with left:
 with right:
     statuses.append(("Gold", render_card(*SERIES[1])))
     statuses.append(("WTI Oil", render_card(*SERIES[3])))
+
+st.subheader("🔒 Locked Call Scoreboard")
+if not call_store:
+    st.warning("Persistent Call Tracker is not active. Set up Supabase and Streamlit Secrets (instructions in README). The dashboard and radar still work.")
+else:
+    rows = st.session_state.get("locked_call_rows", [])
+    graded = [r for r in rows if r.get("status") in ("win", "loss")]
+    wins = sum(r["status"] == "win" for r in graded)
+    losses = len(graded) - wins
+    a,b,c,d = st.columns(4)
+    a.metric("Wins", wins)
+    b.metric("Losses", losses)
+    c.metric("Win rate", f"{wins / len(graded):.1%}" if graded else "—")
+    d.metric("Pending", sum(r.get("status") == "pending" for r in rows))
+    st.caption("Win rate excludes pending contracts and contracts where the system abstained. Only official Kalshi settled results are graded.")
+    for name, series, emoji in SERIES:
+        market_rows = [r for r in graded if r["series_ticker"] == series]
+        market_wins = sum(r["status"] == "win" for r in market_rows)
+        st.write(f"{emoji} **{name}:** {market_wins} W / {len(market_rows)-market_wins} L · " + (f"{market_wins / len(market_rows):.1%}" if market_rows else "Not graded yet"))
+    with st.expander("📜 Prediction history", expanded=False):
+        if rows:
+            st.dataframe([{
+                "Market": r["market_name"], "Contract": r["ticker"],
+                "Call": r["call"], "Locked (UTC)": r["locked_at"],
+                "YES midpoint (¢)": round(r["yes_midpoint"]*100,1),
+                "Status": r["status"].upper(), "Settlement": r.get("settlement_result") or "Pending"
+            } for r in rows], hide_index=True, use_container_width=True)
+        else:
+            st.info("No calls locked yet. The app must be running in the last five minutes of an eligible market to record one.")
+    for message in st.session_state.get("tracker_activity", []):
+        if "error" in message.lower():
+            st.warning(message)
+    st.caption("Calls are locked once per contract ticker; no later price changes overwrite them. Dashboard scans only while open unless an external scheduler runs worker.py.")
 
 st.subheader("🚨 Flip Radar — All Markets")
 summary_cols = st.columns(4)
