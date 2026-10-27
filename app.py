@@ -6,6 +6,8 @@ import requests
 import html
 import re
 import streamlit as st
+import base64
+import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 from call_tracker import store_from_secrets, process, candidate, early_store_from_secrets, process_early
 from pressure_radar import show_pressure_radar
@@ -21,7 +23,7 @@ SERIES = [
 HISTORY_LIMIT = 60
 RECENT_RESULTS = 10
 
-st.set_page_config(page_title="Kalshi Market Command Center", page_icon="📡", layout="wide")
+st.set_page_config(page_title="QUEEN’S EDGE | 254", page_icon="👑", layout="wide")
 
 st.markdown("""<style>
 .yes-pill {color:#16a34a;font-weight:800;font-size:1.05rem;}
@@ -39,6 +41,34 @@ st.markdown("""<style>
 .quote-row {display:flex; justify-content:space-between; align-items:center; padding:3px 0; font-size:.93rem; gap:8px;}
 .quote-row b {font-size:1.12rem;}
 </style>""", unsafe_allow_html=True)
+
+
+st.markdown("""<style>
+.stApp{background:radial-gradient(ellipse at top,#1c0b37 0%,#070714 45%,#05050e 100%);color:#e9e6f7}
+.block-container{max-width:1550px!important;padding-top:.55rem!important}
+.qe-banner img{width:100%;max-height:250px;object-fit:cover;border-radius:12px;border:1px solid #6d28d9;box-shadow:0 0 24px #6b21a866}
+.qe-kicker{text-align:center;color:#c4a5ff;letter-spacing:.13em;font-size:.78rem;margin:8px 0 20px}
+[data-testid="stVerticalBlockBorderWrapper"]{background:linear-gradient(145deg,rgba(18,16,33,.95),rgba(8,8,20,.95));border-color:#5b32a6!important;border-radius:13px!important}
+[data-testid="stMetricValue"]{font-variant-numeric:tabular-nums}
+[data-testid="stSidebar"]{background:#0d0920}
+.stApp h1,.stApp h2,.stApp h3{color:#e8d9ff}
+@media(max-width:700px){.qe-banner img{height:135px;object-fit:cover}.qe-kicker{font-size:.62rem;letter-spacing:0}}
+
+/* Phase 2 compact command overview */
+.qe-market{background:linear-gradient(160deg,#1b1233,#0b0a1b 72%);border:1px solid #7041c4;border-radius:15px;padding:13px 12px 10px;box-shadow:inset 0 1px 0 #ab79ff44,0 0 18px #6f32c822;min-height:360px}
+.qe-market-head{display:flex;justify-content:space-between;gap:5px;align-items:center;border-bottom:1px solid #6642a34d;padding-bottom:8px}
+.qe-market-name{font-size:1.08rem;font-weight:850;color:#f3e9ff;white-space:nowrap}.qe-live{font-size:.61rem;color:#52edc4;white-space:nowrap}
+.qe-timer-label{text-align:center;font-size:.59rem;letter-spacing:.15em;color:#b5a2d3;margin-top:9px}.qe-clock{font-size:.9rem;text-align:center;color:#b6a2d6;padding:2px}
+.qe-row{display:flex;justify-content:space-between;align-items:center;gap:8px;border-bottom:1px solid #b18bf51a;padding:7px 0;font-size:.68rem;color:#b5a5d0}
+.qe-row strong{font-size:.73rem;color:#f4eaff;font-variant-numeric:tabular-nums;text-align:right}.qe-row .qe-muted{color:#8b829e}
+.qe-quotes{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:11px}.qe-quotes>div{background:#100d20;border:1px solid #4c376e;border-radius:8px;padding:7px 4px;text-align:center;min-width:0}
+.qe-quotes small{display:block;font-size:.57rem;color:#b5a5d0}.qe-quotes strong{font-size:.75rem;font-variant-numeric:tabular-nums;white-space:nowrap}.qe-green{color:#58edb2}.qe-red{color:#ff728d}
+.qe-lean{text-align:center;font-size:.8rem;font-weight:850;padding:9px 3px;margin-top:10px;border-radius:7px;background:#1e1635}.qe-lean.positive{color:#59eeb6}.qe-lean.negative{color:#ff7790}.qe-lean.neutral{color:#cfb5ff}
+.qe-ready{margin-top:8px;padding:8px 5px;border:1px solid #6949a2;border-radius:7px;text-align:center;font-size:.65rem;color:#c5b1e4}.qe-foot{font-size:.57rem;color:#9283ac;overflow-wrap:anywhere;margin-top:9px}
+.qe-unavailable{color:#ff9bb2;padding:30px 0;font-size:.8rem}
+@media(max-width:1100px){.qe-market{padding:9px 7px}.qe-market-name{font-size:.84rem}.qe-quotes strong{font-size:.65rem}}
+@media(max-width:700px){.qe-market{min-height:0}.qe-market-name{font-size:1rem}}
+</style>""",unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("⚙️ Radar settings")
@@ -361,8 +391,10 @@ def render_card(name, series, emoji):
             st.info("Upcoming contract — not yet open")
         if closing:
             remaining = max(0, int((closing - now).total_seconds()))
-            st.metric("⏱️ Kalshi contract countdown", f"{remaining // 60:02d}:{remaining % 60:02d}")
-            st.caption(f"Closes at {closing.astimezone(CENTRAL):%I:%M:%S %p %Z} · refreshed every {refresh_seconds}s")
+            _close_ms = int(closing.timestamp() * 1000)
+            components.html(f"""<div style='font-family:system-ui;color:#b994ff;background:#100a20;border:1px solid #6d28d9;border-radius:10px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center'><span style='font-size:12px'>⏱️ NEXT CLOSE</span><b id='clock' style='font-variant-numeric:tabular-nums;font-size:23px;color:#39e9bb'>--:--</b></div><script>const end={_close_ms};const el=document.getElementById('clock');function tick(){{const diff=Math.max(0,Math.ceil((end-Date.now())/1000));const m=Math.floor(diff/60),s=diff%60;el.textContent=String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');el.style.color=diff<=60?'#ff5b75':'#39e9bb';}}tick();setInterval(tick,250);</script>""",height=62)
+
+            st.caption(f"Closes at {closing.astimezone(CENTRAL):%I:%M:%S %p %Z} · timer ticks live; quotes poll every {refresh_seconds}s")
         else:
             st.metric("⏱️ Time remaining", "—")
         if closing:
@@ -447,18 +479,6 @@ def render_card(name, series, emoji):
         st.caption(f"Samples: {count} · Source: {source}")
         direction, strength, magnitude = momentum_stats(m)
         st.markdown(f"**Momentum:** {direction} · {strength}")
-        st.markdown("**📈 YES price trend & radar movements**")
-        quote_samples = st.session_state.quote_history.get(ticker, [])
-        if len(quote_samples) >= 2:
-            # Each point is a sampled Kalshi quote, not a continuous trade-price feed.
-            chart_rows = [
-                {"Time": sample_time.astimezone(CENTRAL), "YES price (¢)": round(sample_price * 100, 2)}
-                for sample_time, sample_price, _ in quote_samples
-            ]
-            st.line_chart(chart_rows, x="Time", y="YES price (¢)", height=190, use_container_width=True)
-            st.caption("Rolling YES quote samples · newest at right · a rising line means YES became more expensive")
-        else:
-            st.caption("Chart warming up — keep this page open for at least two refreshes.")
         st.markdown("**Last 10 settled markets**")
         recent_arrows(series)
         with st.expander("Contract details and rules"):
@@ -516,20 +536,97 @@ if early_store:
     except (requests.RequestException, ValueError) as exc:
         st.session_state["early_tracker_error"] = str(exc)
 
-st.title("📡 Kalshi Market Command Center")
+# QUEEN'S EDGE header - image based on the user-approved design reference.
+from pathlib import Path as _Path
+_banner = _Path(__file__).with_name("queens_banner.jpg")
+if _banner.exists():
+    _encoded = base64.b64encode(_banner.read_bytes()).decode("ascii")
+    st.markdown(f'<div class="qe-banner"><img src="data:image/jpeg;base64,{_encoded}" alt="QUEEN’S EDGE — purple bull and bear banner" /></div>', unsafe_allow_html=True)
+else:
+    st.title("👑 QUEEN’S EDGE")
+st.markdown('<div class="qe-kicker">⚡ LIVE KALSHI MARKETS &nbsp; • &nbsp; BUILT BY K HENDO | 254 &nbsp; • &nbsp; READ ONLY</div>', unsafe_allow_html=True)
+
 st.caption("15-minute markets · Kalshi contract-aligned countdowns · Dashboard-only Flip Radar · Read-only")
 st.caption(f"⟳ Refresh interval: {refresh_seconds}s · API quotes may lag or be rate-limited · not a streaming connection")
 st.info("Radar detects quote reversals. The experimental settlement call reflects Kalshi market-implied pricing, not a validated independent forecast. No trades are executed.")
 
-# Streamlit columns collapse vertically on narrower screens.
-left, right = st.columns(2, gap="medium")
-statuses = []
-with left:
-    statuses.append(("Bitcoin", render_card(*SERIES[0])))
-    statuses.append(("Silver", render_card(*SERIES[2])))
-with right:
-    statuses.append(("Gold", render_card(*SERIES[1])))
-    statuses.append(("WTI Oil", render_card(*SERIES[3])))
+# Compact, four-across overview: real Kalshi contract data only.
+# This does not claim to show underlying spot prices or calibrated forecasts.
+def render_overview(name, series, emoji):
+    try:
+        market = current_market(fetch_markets(series))
+    except (requests.RequestException, ValueError):
+        market = None
+    if not market:
+        st.markdown(f'<div class="qe-market"><div class="qe-market-name">{html.escape(emoji)} {html.escape(name)}</div><div class="qe-unavailable">Kalshi contract unavailable</div></div>', unsafe_allow_html=True)
+        return
+    ticker = str(market.get("ticker") or series)
+    closing = when(market.get("close_time") or market.get("latest_expiration_time"))
+    verified = directional_labels(market)[2]
+    bid = price(market, "yes_bid_dollars", "yes_bid")
+    ask = price(market, "yes_ask_dollars", "yes_ask")
+    no_bid = price(market, "no_bid_dollars", "no_bid")
+    no_ask = price(market, "no_ask_dollars", "no_ask")
+    good_quote = bid is not None and ask is not None and 0 <= bid <= ask <= 1 and ask-bid <= .15 and not (bid == 0 and ask == 1)
+    mid = (bid+ask)/2 if good_quote else None
+    if not verified:
+        lean, lean_cls = "UNVERIFIED RULES", "neutral"
+    elif mid is None:
+        lean, lean_cls = "NO RELIABLE QUOTE", "neutral"
+    elif mid >= .60:
+        lean, lean_cls = "▲ ABOVE TARGET", "positive"
+    elif mid <= .40:
+        lean, lean_cls = "▼ BELOW TARGET", "negative"
+    else:
+        lean, lean_cls = "NO CLEAR CALL", "neutral"
+    spread = (ask-bid)*100 if bid is not None and ask is not None and 0 <= bid <= ask <= 1 else None
+    # Readiness is deliberately conservative until liquidity, fees and execution costs are validated.
+    readiness = "WAIT · not evaluated"
+    recorded_early = st.session_state.get("early_call_map", {}).get(ticker)
+    recorded_late = st.session_state.get("locked_call_map", {}).get(ticker)
+    early_text = (recorded_early.get("call", "—") + " · " + recorded_early.get("status", "").upper()) if recorded_early else "Not recorded"
+    late_text = (recorded_late.get("call", "—") + " · " + recorded_late.get("status", "").upper()) if recorded_late else "Not recorded"
+    def show_quote(x):
+        return cents(x)
+    close_ms = int(closing.timestamp()*1000) if closing else 0
+    # One tiny browser timer per card; prices change only on real API refreshes.
+    card = f'''<div class="qe-market">
+      <div class="qe-market-head"><span class="qe-market-name">{html.escape(emoji)} {html.escape(name.upper())}</span><span class="qe-live">● KALSHI</span></div>
+      <div class="qe-timer-label">CONTRACT CLOSE</div>
+      <div class="qe-clock" data-close="{close_ms}">--:--</div>
+      <div class="qe-row"><span>TARGET / STRIKE</span><strong>{html.escape(target(market))}</strong></div>
+      <div class="qe-row"><span>UNDERLYING LIVE PRICE</span><strong class="qe-muted">Feed pending</strong></div>
+      <div class="qe-row"><span>PRICE VS TARGET</span><strong class="qe-muted">Not verified</strong></div>
+      <div class="qe-quotes"><div><small>YES BID / ASK</small><strong class="qe-green">{show_quote(bid)} / {show_quote(ask)}</strong></div><div><small>NO BID / ASK</small><strong class="qe-red">{show_quote(no_bid)} / {show_quote(no_ask)}</strong></div></div>
+      <div class="qe-lean {lean_cls}">{html.escape(lean)}</div>
+      <div class="qe-row"><span>EARLY</span><strong>{html.escape(early_text)}</strong></div>
+      <div class="qe-row"><span>MID</span><strong class="qe-muted">Not implemented</strong></div>
+      <div class="qe-row"><span>LATE / 5-MIN LOCK</span><strong>{html.escape(late_text)}</strong></div>
+      <div class="qe-ready">TRADE READINESS: {readiness}</div>
+      <div class="qe-foot">{html.escape(ticker)} · {('Spread '+format(spread,'.1f')+'¢') if spread is not None else 'Spread unavailable'}</div>
+    </div>'''
+    st.markdown(card, unsafe_allow_html=True)
+    # Streamlit markdown sanitizes script tags, so keep browser timer in a separate component
+    # aligned below the overview. The primary visible timer is the browser component below.
+    if closing:
+        components.html(f'''<div style="font-family:system-ui;background:#130d25;color:#d9c8ff;border:1px solid #6f42c1;border-radius:9px;text-align:center;padding:5px;font-size:12px">LIVE COUNTDOWN <b id="clock" style="font-size:18px;color:#54efbd;font-variant-numeric:tabular-nums">--:--</b></div><script>const end={close_ms};const el=document.getElementById('clock');function tick(){{let n=Math.max(0,Math.ceil((end-Date.now())/1000));el.textContent=String(Math.floor(n/60)).padStart(2,'0')+':'+String(n%60).padStart(2,'0');el.style.color=n<=60?'#ff6688':'#54efbd';}}tick();setInterval(tick,250);</script>''', height=46)
+
+st.markdown("### ⚡ LIVE MARKET COMMAND")
+st.caption("Four-market overview · quotes update on Kalshi polling · countdowns tick every second · no automated trades")
+overview_columns = st.columns(4, gap="small")
+for overview_col, market_spec in zip(overview_columns, SERIES):
+    with overview_col:
+        render_overview(*market_spec)
+
+with st.expander("🔍 Detailed market intelligence, pressure radar & contract rules", expanded=False):
+    left, right = st.columns(2, gap="medium")
+    statuses = []
+    with left:
+        statuses.append(("Bitcoin", render_card(*SERIES[0])))
+        statuses.append(("Silver", render_card(*SERIES[2])))
+    with right:
+        statuses.append(("Gold", render_card(*SERIES[1])))
+        statuses.append(("WTI Oil", render_card(*SERIES[3])))
 
 st.subheader("🔒 Locked Call Scoreboard")
 if not call_store:
@@ -604,32 +701,6 @@ summary_cols = st.columns(4)
 for col, (name, status) in zip(summary_cols, sorted(statuses, key=lambda s: [x[0] for x in SERIES].index(s[0]))):
     col.metric(name, status["label"])
 
-st.subheader("📊 All-market momentum comparison")
-st.caption("Latest absolute change in YES quote price, in cents per sample. Taller bars mean larger recent movement, not better trade odds.")
-momentum_chart = [
-    {"Market": name, "Movement (¢)": round(status["magnitude"], 2)}
-    for name, status in sorted(statuses, key=lambda x: [item[0] for item in SERIES].index(x[0]))
-]
-st.bar_chart(momentum_chart, x="Market", y="Movement (¢)", height=250, use_container_width=True)
-
-st.subheader("📉 Recent settled results comparison")
-st.caption("Shows counts of YES and NO outcomes among up to 10 recent settled contracts for each series. These are contract outcomes, not asset up/down moves.")
-result_counts = []
-for series_name, series_ticker, _ in SERIES:
-    try:
-        recent = fetch_recent_results(series_ticker)
-    except (requests.RequestException, ValueError):
-        recent = []
-    result_counts.append({
-        "Market": series_name,
-        "YES settled": sum(str(m.get("result", "")).lower() == "yes" for m in recent),
-        "NO settled": sum(str(m.get("result", "")).lower() == "no" for m in recent),
-    })
-if any(row["YES settled"] or row["NO settled"] for row in result_counts):
-    st.bar_chart(result_counts, x="Market", y=["YES settled", "NO settled"], height=250, use_container_width=True)
-else:
-    st.caption("Waiting for settled result data from Kalshi.")
-
 st.markdown("**Momentum ranking**")
 ranked = sorted(statuses, key=lambda item: item[1]["magnitude"], reverse=True)
 for index, (name, stat) in enumerate(ranked, 1):
@@ -646,5 +717,5 @@ else:
 
 st.caption("Recent-market arrows show official Kalshi settlement results: YES ↑ / NO ↓. These are not automatically ABOVE / BELOW unless contract rules establish that mapping.")
 st.caption("Radar thresholds: direction change ≥0.5¢ each way; sudden move ≥" + str(sudden_cents) + "¢ per sample. Quote history lasts only for this Streamlit session. These are price-movement observations, not trading recommendations.")
-st.caption(f"Last refresh: {datetime.now(CENTRAL):%b %d, %Y · %I:%M:%S %p %Z} · Contract countdowns align to Kalshi close timestamps; updates are not guaranteed every {refresh_seconds}s.")
+st.caption(f"Last refresh: {datetime.now(CENTRAL):%b %d, %Y · %I:%M:%S %p %Z} · Contract countdowns run in your browser; quotes are polled every {refresh_seconds}s.")
 st_autorefresh(interval=refresh_seconds * 1000, key="kalshi_grid_refresh")
