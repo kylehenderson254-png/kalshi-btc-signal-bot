@@ -11,7 +11,6 @@ import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 from call_tracker import store_from_secrets, process, candidate, early_store_from_secrets, process_early
 from pressure_radar import show_pressure_radar
-from paper_tracker import from_secrets as paper_store_from_secrets, grade_pending as paper_grade_pending, pnl as paper_pnl
 
 API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 CENTRAL = ZoneInfo("America/Chicago")
@@ -54,18 +53,21 @@ st.markdown("""<style>
 [data-testid="stSidebar"]{background:#0d0920}
 .stApp h1,.stApp h2,.stApp h3{color:#e8d9ff}
 @media(max-width:700px){.qe-banner img{height:135px;object-fit:cover}.qe-kicker{font-size:.62rem;letter-spacing:0}}
-</style>""",unsafe_allow_html=True)
 
-st.markdown("""<style>
-.qe-market-name{font-size:1.2rem;font-weight:900;letter-spacing:.08em;color:#e6d4ff;margin-bottom:4px}
-.qe-compact-quote{border:1px solid;border-radius:12px;padding:10px 9px;min-height:112px;font-size:.78rem;line-height:1.8;font-variant-numeric:tabular-nums}
-.qe-compact-quote div:not(.qe-quote-heading){display:flex;justify-content:space-between;gap:3px}
-.qe-compact-quote b{font-size:.94rem}
-.qe-quote-heading{font-weight:800;font-size:.75rem;min-height:32px;line-height:1.2;margin-bottom:4px}
-.qe-green{background:rgba(15,140,84,.12);border-color:#178d61;color:#58e6aa}
-.qe-red{background:rgba(180,35,70,.12);border-color:#ad3358;color:#ff8ca2}
-[data-testid="stVerticalBlockBorderWrapper"]{border-color:#6d28d9!important}
-@media(max-width:700px){.qe-market-name{font-size:1.05rem}.qe-compact-quote{padding:7px 5px;font-size:.7rem}.qe-compact-quote b{font-size:.78rem}}
+/* Phase 2 compact command overview */
+.qe-market{background:linear-gradient(160deg,#1b1233,#0b0a1b 72%);border:1px solid #7041c4;border-radius:15px;padding:13px 12px 10px;box-shadow:inset 0 1px 0 #ab79ff44,0 0 18px #6f32c822;min-height:360px}
+.qe-market-head{display:flex;justify-content:space-between;gap:5px;align-items:center;border-bottom:1px solid #6642a34d;padding-bottom:8px}
+.qe-market-name{font-size:1.08rem;font-weight:850;color:#f3e9ff;white-space:nowrap}.qe-live{font-size:.61rem;color:#52edc4;white-space:nowrap}
+.qe-timer-label{text-align:center;font-size:.59rem;letter-spacing:.15em;color:#b5a2d3;margin-top:9px}.qe-clock{font-size:.9rem;text-align:center;color:#b6a2d6;padding:2px}
+.qe-row{display:flex;justify-content:space-between;align-items:center;gap:8px;border-bottom:1px solid #b18bf51a;padding:7px 0;font-size:.68rem;color:#b5a5d0}
+.qe-row strong{font-size:.73rem;color:#f4eaff;font-variant-numeric:tabular-nums;text-align:right}.qe-row .qe-muted{color:#8b829e}
+.qe-quotes{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:11px}.qe-quotes>div{background:#100d20;border:1px solid #4c376e;border-radius:8px;padding:7px 4px;text-align:center;min-width:0}
+.qe-quotes small{display:block;font-size:.57rem;color:#b5a5d0}.qe-quotes strong{font-size:.75rem;font-variant-numeric:tabular-nums;white-space:nowrap}.qe-green{color:#58edb2}.qe-red{color:#ff728d}
+.qe-lean{text-align:center;font-size:.8rem;font-weight:850;padding:9px 3px;margin-top:10px;border-radius:7px;background:#1e1635}.qe-lean.positive{color:#59eeb6}.qe-lean.negative{color:#ff7790}.qe-lean.neutral{color:#cfb5ff}
+.qe-ready{margin-top:8px;padding:8px 5px;border:1px solid #6949a2;border-radius:7px;text-align:center;font-size:.65rem;color:#c5b1e4}.qe-foot{font-size:.57rem;color:#9283ac;overflow-wrap:anywhere;margin-top:9px}
+.qe-unavailable{color:#ff9bb2;padding:30px 0;font-size:.8rem}
+@media(max-width:1100px){.qe-market{padding:9px 7px}.qe-market-name{font-size:.84rem}.qe-quotes strong{font-size:.65rem}}
+@media(max-width:700px){.qe-market{min-height:0}.qe-market-name{font-size:1rem}}
 </style>""",unsafe_allow_html=True)
 
 with st.sidebar:
@@ -365,70 +367,9 @@ def scan(m, name):
     return "Scanning", "No flip detected in latest sample", len(hist), source
 
 
-def smart_entry_advisor(name, m, verified, remaining, direction):
-    """Conservative read-only entry watchlist; no claim of proven trading edge."""
-    if name not in ("Bitcoin", "WTI Oil"):
-        return
-    yes_ask = price(m, "yes_ask_dollars", "yes_ask")
-    no_ask = price(m, "no_ask_dollars", "no_ask")
-    ticker = m.get("ticker", "")
-    hist = st.session_state.quote_history.get(ticker, [])
-    side = None
-    # Ignore zero-change polling samples. Confirm two meaningful consecutive
-    # directional changes within 90 seconds, using the current contract only.
-    meaningful_moves = []
-    if verified and len(hist) >= 3:
-        latest_time = hist[-1][0]
-        for i in range(1, len(hist)):
-            sample_time = hist[i][0]
-            if (latest_time - sample_time).total_seconds() > 90:
-                continue
-            delta = hist[i][1] - hist[i - 1][1]
-            if delta >= 0.005:
-                meaningful_moves.append(1)
-            elif delta <= -0.005:
-                meaningful_moves.append(-1)
-        if len(meaningful_moves) >= 2:
-            if meaningful_moves[-2:] == [1, 1]:
-                side = "ABOVE"
-            elif meaningful_moves[-2:] == [-1, -1]:
-                side = "BELOW"
-    ask = yes_ask if side == "ABOVE" else no_ask if side == "BELOW" else None
-    if not verified:
-        status, reason = "WAIT", "Contract direction not verified"
-    elif remaining is None or remaining <= 30:
-        status, reason = "SKIP", "Too close to settlement or closing time unavailable"
-    elif side is None:
-        status, reason = "WAIT", "Need two meaningful same-direction quote moves within 90 seconds"
-    elif ask is None or not (0 < ask < 1):
-        status, reason = "WAIT", "Executable ask quote unavailable"
-    elif ask >= .90:
-        status, reason = "SKIP", "High entry cost leaves little upside"
-    elif ask > .80:
-        status, reason = "WAIT", "Entry price above the 80¢ watch threshold"
-    else:
-        status, reason = "WATCH", "Directional momentum aligns; profitability remains unproven"
-    tone = {"WATCH":"#45dfaa", "WAIT":"#e9c46a", "SKIP":"#ff7e98"}[status]
-    st.markdown(f'<div style="border:1px solid #6542a6;border-radius:11px;padding:10px;background:#110d23;margin-top:8px">'
-                f'<div style="color:#c8aaff;font-size:.78rem;font-weight:800">🎯 SMART ENTRY ADVISOR · EXPERIMENTAL</div>'
-                f'<div style="font-size:1.05rem;font-weight:850;color:{tone}">{status} · {html.escape(side or "NO SIDE")}</div>'
-                f'<div style="color:#c8c1da;font-size:.79rem">{html.escape(reason)}</div></div>', unsafe_allow_html=True)
-    if ask is not None:
-        st.caption(f"{side} ask {ask*100:.1f}¢ · payout if correct {(1-ask)*100:.1f}¢ · loss if wrong {ask*100:.1f}¢ · break-even >{ask*100:.1f}% after fees")
-    if status == "WATCH" and ask is not None and ticker and st.session_state.get("paper_store"):
-        try:
-            closing = when(m.get("close_time") or m.get("latest_expiration_time"))
-            st.session_state.paper_store.record_once(name, ticker, side, ask, closing)
-            st.caption("📒 First WATCH for this contract saved as a hypothetical one-contract entry.")
-        except requests.RequestException as exc:
-            st.warning(f"Paper entry could not be saved: {exc}")
-    st.caption("WATCH is not a buy instruction. Paper entries assume an immediate fill at the observed ask, which is not guaranteed. No orders are placed.")
-
-
 def render_card(name, series, emoji):
-    """Compact, consistently ordered market card; detailed tools remain accessible."""
     with st.container(border=True):
-        st.markdown(f'<div class="qe-market-name">{emoji} {html.escape(name.upper())}</div>', unsafe_allow_html=True)
+        st.subheader(f"{emoji} {name}")
         try:
             markets = fetch_markets(series)
         except (requests.RequestException, ValueError) as exc:
@@ -436,98 +377,115 @@ def render_card(name, series, emoji):
             st.caption(f"{series}: {exc}")
             return {"label": "Unavailable", "magnitude": 0, "direction": "—"}
         m = current_market(markets)
-        if m:
-            st.session_state.setdefault("radar_active_tickers", {})[series] = m.get("ticker")
-        else:
-            st.session_state.setdefault("radar_active_tickers", {}).pop(series, None)
         if not m:
-            st.warning("No active 15-minute contract")
+            st.warning("No open 15-minute contract returned")
+            st.caption(f"Series: {series}. Confirm the series ticker and availability on Kalshi.")
             return {"label": "No market", "magnitude": 0, "direction": "—"}
-
         ticker = m.get("ticker", series)
+        st.caption(m.get("title") or ticker)
+        st.caption(f"Contract: {ticker}")
         closing = when(m.get("close_time") or m.get("latest_expiration_time"))
         opening = when(m.get("open_time"))
         now = datetime.now(timezone.utc)
-        remaining = max(0, int((closing - now).total_seconds())) if closing else None
-        above_label, below_label, verified = directional_labels(m)
-        label, detail, count, source = scan(m, name)
-        direction, strength, magnitude = momentum_stats(m)
-        bid = price(m, "yes_bid_dollars", "yes_bid")
-        ask = price(m, "yes_ask_dollars", "yes_ask")
-        midpoint_val = (bid + ask) / 2 if bid is not None and ask is not None and 0 <= bid <= ask <= 1 else None
-
-        st.caption(f"Target / strike: **{target(m)}**")
+        if opening and opening > now:
+            st.info("Upcoming contract — not yet open")
         if closing:
-            end_ms = int(closing.timestamp() * 1000)
-            components.html(f"""<div style="height:48px;background:#120a25;border:1px solid #6d28d9;border-radius:10px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;font-family:system-ui;color:#c4a5ff"><span style="font-size:12px">⏱️ CLOSES IN</span><strong id="clock" style="font-size:24px;color:#39e9bb;font-variant-numeric:tabular-nums">--:--</strong></div><script>const end={end_ms},el=document.getElementById("clock");function tick(){{let n=Math.max(0,Math.ceil((end-Date.now())/1000));el.textContent=String(Math.floor(n/60)).padStart(2,"0")+":"+String(n%60).padStart(2,"0");el.style.color=n<=60?"#ff5b75":"#39e9bb";}}tick();setInterval(tick,250);</script>""", height=52)
-        else:
-            st.caption("Close time unavailable")
+            remaining = max(0, int((closing - now).total_seconds()))
+            _close_ms = int(closing.timestamp() * 1000)
+            components.html(f"""<div style='font-family:system-ui;color:#b994ff;background:#100a20;border:1px solid #6d28d9;border-radius:10px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center'><span style='font-size:12px'>⏱️ NEXT CLOSE</span><b id='clock' style='font-variant-numeric:tabular-nums;font-size:23px;color:#39e9bb'>--:--</b></div><script>const end={_close_ms};const el=document.getElementById('clock');function tick(){{const diff=Math.max(0,Math.ceil((end-Date.now())/1000));const m=Math.floor(diff/60),s=diff%60;el.textContent=String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');el.style.color=diff<=60?'#ff5b75':'#39e9bb';}}tick();setInterval(tick,250);</script>""",height=62)
 
-        yes_bid = cents(bid)
-        yes_ask = cents(ask)
+            st.caption(f"Closes at {closing.astimezone(CENTRAL):%I:%M:%S %p %Z} · timer ticks live; quotes poll every {refresh_seconds}s")
+        else:
+            st.metric("⏱️ Time remaining", "—")
+        if closing:
+            remaining_seconds = max(0, int((closing - now).total_seconds()))
+            if remaining_seconds <= 60:
+                st.error("⏳ FINAL MINUTE — signals can change quickly")
+            elif remaining_seconds <= 180:
+                st.warning("⏳ Less than 3 minutes remain")
+        above_label, below_label, verified_direction = directional_labels(m)
+        st.markdown("**Above / Below target — Kalshi bid and ask**" if verified_direction else "**Kalshi YES / NO bid and ask**")
+        if not verified_direction:
+            st.caption("Direction not confirmed by available contract-rule text. Showing official YES / NO labels for accuracy.")
+        yes_bid = cents(price(m, "yes_bid_dollars", "yes_bid"))
+        yes_ask = cents(price(m, "yes_ask_dollars", "yes_ask"))
         no_bid = cents(price(m, "no_bid_dollars", "no_bid"))
         no_ask = cents(price(m, "no_ask_dollars", "no_ask"))
-        col_yes, col_no = st.columns(2, gap="small")
-        with col_yes:
+        # Visual quote tiles only. Not buttons: no click action and no trading API credentials.
+        yes_col, no_col = st.columns(2, gap="small")
+        with yes_col:
             st.markdown(
-                f'<div class="qe-compact-quote qe-green"><div class="qe-quote-heading">{html.escape(above_label if verified else "YES")}</div>'
-                f'<div>BID <b>{html.escape(yes_bid)}</b></div><div>ASK <b>{html.escape(yes_ask)}</b></div></div>',
-                unsafe_allow_html=True)
-        with col_no:
+                f'<div class="quote-tile yes-tile"><div class="quote-title">🟢 {above_label}</div>'
+                f'<div class="quote-row"><span>BID</span><b>{html.escape(yes_bid)}</b></div>'
+                f'<div class="quote-row"><span>ASK</span><b>{html.escape(yes_ask)}</b></div>'
+                f'</div>', unsafe_allow_html=True,
+            )
+        with no_col:
             st.markdown(
-                f'<div class="qe-compact-quote qe-red"><div class="qe-quote-heading">{html.escape(below_label if verified else "NO")}</div>'
-                f'<div>BID <b>{html.escape(no_bid)}</b></div><div>ASK <b>{html.escape(no_ask)}</b></div></div>',
-                unsafe_allow_html=True)
-
-        if not verified:
-            st.caption("Direction unverified — YES/NO labels retained")
-        if midpoint_val is not None and verified and ask - bid <= .15:
-            if midpoint_val >= .60:
-                lean = "🟢 ABOVE"
-            elif midpoint_val <= .40:
-                lean = "🔴 BELOW"
+                f'<div class="quote-tile no-tile"><div class="quote-title">🔴 {below_label}</div>'
+                f'<div class="quote-row"><span>BID</span><b>{html.escape(no_bid)}</b></div>'
+                f'<div class="quote-row"><span>ASK</span><b>{html.escape(no_ask)}</b></div>'
+                f'</div>', unsafe_allow_html=True,
+            )
+        st.caption("Quote display only · No trading actions · ABOVE maps to YES only when verified from contract rules")
+        show_pressure_radar(name, ticker)
+        e, f = st.columns(2)
+        e.metric("Target / strike", target(m))
+        f.metric("Last YES", cents(price(m, "last_price_dollars", "last_price")))
+        label, detail, count, source = scan(m, name)
+        st.markdown("**🌅 Early call — live preview (not locked)**")
+        if not closing or (opening and opening > now):
+            st.caption("Waiting for an active contract with a closing time.")
+        elif remaining > 300:
+            early_bid = price(m, "yes_bid_dollars", "yes_bid")
+            early_ask = price(m, "yes_ask_dollars", "yes_ask")
+            if not verified_direction:
+                st.caption("No early call: ABOVE/BELOW meaning is not verified from the contract rules.")
+            elif early_bid is None or early_ask is None or not (0 <= early_bid <= early_ask <= 1) or early_ask - early_bid > 0.15 or (early_bid == 0 and early_ask == 1):
+                st.caption("No early call: reliable YES bid/ask quotes are unavailable or spread is too wide.")
             else:
-                lean = "⚪ NO CALL"
-            st.markdown(f"**Market lean: {lean}** · YES midpoint {midpoint_val*100:.1f}¢")
+                early_mid = (early_bid + early_ask) / 2
+                if early_mid >= 0.60:
+                    st.success(f"EARLY LEAN: ABOVE TARGET ↑ · YES quote midpoint {early_mid * 100:.1f}¢")
+                elif early_mid <= 0.40:
+                    st.error(f"EARLY LEAN: BELOW TARGET ↓ · YES quote midpoint {early_mid * 100:.1f}¢")
+                else:
+                    st.info(f"EARLY LEAN: NO CLEAR CALL · YES quote midpoint {early_mid * 100:.1f}¢")
+                st.caption("Live preview can change. The first eligible early signal is recorded separately and graded after official settlement; the 5-minute locked call remains independent.")
         else:
-            st.caption("Market lean unavailable · verify quotes/rules")
-
-        smart_entry_advisor(name, m, verified, remaining, direction)
-
-        early = st.session_state.get("early_call_map", {}).get(ticker)
-        locked = st.session_state.get("locked_call_map", {}).get(ticker)
-        st.markdown(f"**🌅 Early:** {html.escape(str(early['call'])) if early else 'Live preview only'}")
-        st.markdown(f"**🔒 Locked:** {html.escape(str(locked['call'])) + ' · ' + html.escape(str(locked['status'])) if locked else 'Not recorded in preview'}")
-        st.caption(f"📡 {label} · {direction} · {strength}")
-        with st.expander("Radar, call details & history", expanded=False):
-            st.caption(f"Contract: {ticker}")
-            st.caption(f"Closes: {closing.astimezone(CENTRAL):%I:%M:%S %p %Z}" if closing else "Close time unknown")
-            st.caption(f"Quotes poll every {refresh_seconds}s; countdown updates locally")
-            st.caption("Quote display only. No trading actions.")
-            st.markdown("**🐋 Buying / Selling Pressure & Whale Radar**")
-            show_pressure_radar(name, ticker)
-            st.markdown("**🌅 Early call — live preview (not locked)**")
-            if closing and (not opening or opening <= now) and remaining > 300 and midpoint_val is not None and verified and ask - bid <= .15:
-                st.write(f"Current early lean: {lean} · YES midpoint {midpoint_val*100:.1f}¢")
-            else:
-                st.caption("Early preview unavailable or early window has ended.")
-            st.caption("Live lean can change; recorded early and locked calls are separate.")
-            prediction_panel(m, verified, remaining, ticker)
-            st.markdown("**🔒 Automatic 5-minute locked call**")
-            if locked:
-                st.write(f"{locked['call']} · {locked['status']} · {locked['locked_at']}")
-            elif st.session_state.get("tracker_enabled"):
-                row, reason = candidate(m, name, series)
-                st.caption("Eligible to lock" if row else (reason or "Waiting"))
-            else:
-                st.caption("Supabase secrets not configured in preview.")
-            st.markdown("**📡 Flip Radar**")
-            st.caption(f"{label} · {detail} · {count} samples · {source}")
-            st.markdown("**Last 10 settled markets**")
-            recent_arrows(series)
-            with st.expander("Official contract rules"):
-                st.write(m.get("rules_primary") or "Check Kalshi for contract rules.")
-                st.write(m.get("rules_secondary") or "")
+            st.caption("Early preview window has ended. Check the 5-minute locked call below.")
+        early_saved = st.session_state.get("early_call_map", {}).get(ticker)
+        if early_saved:
+            st.caption(f"📜 Recorded early call: {early_saved['call']} · {early_saved['status'].upper()} · "
+                       f"YES midpoint {early_saved['yes_midpoint'] * 100:.1f}¢ · {early_saved['locked_at']} UTC")
+        prediction_panel(m, verified_direction, remaining if closing else None, ticker)
+        st.markdown("**🔒 Automatic 5-minute locked call**")
+        stored = st.session_state.get("locked_call_map", {}).get(ticker)
+        if stored:
+            label = "🟢 ABOVE" if stored["call"] == "ABOVE" else "🔴 BELOW"
+            st.markdown(f"**LOCKED: {label}** · {stored['status'].upper()}")
+            st.caption(f"Locked at {stored['locked_at']} · quote midpoint {stored['yes_midpoint'] * 100:.1f}¢")
+        elif st.session_state.get("tracker_enabled"):
+            row, reason = candidate(m, name, series)
+            st.caption("Eligible for automatic lock now" if row else (reason or "Waiting for lock"))
+        else:
+            st.caption("Persistent call tracking not configured; see README setup instructions.")
+        st.divider()
+        st.markdown("**📡 Flip Radar**")
+        if label.startswith("🔺") or label.startswith("🔻") or label.startswith("⚡"):
+            st.warning(f"{label} — {detail}")
+        else:
+            st.caption(f"{label} · {detail}")
+        st.caption(f"Samples: {count} · Source: {source}")
+        direction, strength, magnitude = momentum_stats(m)
+        st.markdown(f"**Momentum:** {direction} · {strength}")
+        st.markdown("**Last 10 settled markets**")
+        recent_arrows(series)
+        with st.expander("Contract details and rules"):
+            st.write(f"Market ticker: {ticker}")
+            st.write(f"Closes (Central): {closing.astimezone(CENTRAL):%b %d, %I:%M:%S %p %Z}" if closing else "Close time not provided")
+            st.write(m.get("rules_primary") or "Primary rules not included in response; check Kalshi.")
+            st.write(m.get("rules_secondary") or "")
         return {"label": label, "magnitude": magnitude, "direction": direction}
 
 
@@ -578,18 +536,6 @@ if early_store:
     except (requests.RequestException, ValueError) as exc:
         st.session_state["early_tracker_error"] = str(exc)
 
-# Separate paper-entry storage. Existing call trackers are not modified.
-st.session_state["paper_store"] = paper_store_from_secrets(st.secrets)
-st.session_state["paper_rows"] = []
-st.session_state["paper_error"] = None
-if st.session_state["paper_store"]:
-    try:
-        rows = st.session_state.paper_store.all()
-        paper_grade_pending(st.session_state.paper_store, rows)
-        st.session_state["paper_rows"] = st.session_state.paper_store.all()
-    except (requests.RequestException, ValueError) as exc:
-        st.session_state["paper_error"] = str(exc)
-
 # QUEEN'S EDGE header - image based on the user-approved design reference.
 from pathlib import Path as _Path
 _banner = _Path(__file__).with_name("queens_banner.jpg")
@@ -604,53 +550,83 @@ st.caption("15-minute markets · Kalshi contract-aligned countdowns · Dashboard
 st.caption(f"⟳ Refresh interval: {refresh_seconds}s · API quotes may lag or be rate-limited · not a streaming connection")
 st.info("Radar detects quote reversals. The experimental settlement call reflects Kalshi market-implied pricing, not a validated independent forecast. No trades are executed.")
 
-# Two matched rows. Bitcoin and Oil always appear side by side.
-st.markdown("### ⚡ LIVE MARKET GRID")
-statuses = []
-top_left, top_right = st.columns(2, gap="small")
-with top_left:
-    statuses.append(("Bitcoin", render_card("Bitcoin", "KXBTC15M", "₿")))
-with top_right:
-    statuses.append(("WTI Oil", render_card("WTI Oil", "KXWTI15M", "🛢️")))
-bottom_left, bottom_right = st.columns(2, gap="small")
-with bottom_left:
-    statuses.append(("Gold", render_card("Gold", "KXGOLD15M", "🥇")))
-with bottom_right:
-    statuses.append(("Silver", render_card("Silver", "KXSILVER15M", "🥈")))
+# Compact, four-across overview: real Kalshi contract data only.
+# This does not claim to show underlying spot prices or calibrated forecasts.
+def render_overview(name, series, emoji):
+    try:
+        market = current_market(fetch_markets(series))
+    except (requests.RequestException, ValueError):
+        market = None
+    if not market:
+        st.markdown(f'<div class="qe-market"><div class="qe-market-name">{html.escape(emoji)} {html.escape(name)}</div><div class="qe-unavailable">Kalshi contract unavailable</div></div>', unsafe_allow_html=True)
+        return
+    ticker = str(market.get("ticker") or series)
+    closing = when(market.get("close_time") or market.get("latest_expiration_time"))
+    verified = directional_labels(market)[2]
+    bid = price(market, "yes_bid_dollars", "yes_bid")
+    ask = price(market, "yes_ask_dollars", "yes_ask")
+    no_bid = price(market, "no_bid_dollars", "no_bid")
+    no_ask = price(market, "no_ask_dollars", "no_ask")
+    good_quote = bid is not None and ask is not None and 0 <= bid <= ask <= 1 and ask-bid <= .15 and not (bid == 0 and ask == 1)
+    mid = (bid+ask)/2 if good_quote else None
+    if not verified:
+        lean, lean_cls = "UNVERIFIED RULES", "neutral"
+    elif mid is None:
+        lean, lean_cls = "NO RELIABLE QUOTE", "neutral"
+    elif mid >= .60:
+        lean, lean_cls = "▲ ABOVE TARGET", "positive"
+    elif mid <= .40:
+        lean, lean_cls = "▼ BELOW TARGET", "negative"
+    else:
+        lean, lean_cls = "NO CLEAR CALL", "neutral"
+    spread = (ask-bid)*100 if bid is not None and ask is not None and 0 <= bid <= ask <= 1 else None
+    # Readiness is deliberately conservative until liquidity, fees and execution costs are validated.
+    readiness = "WAIT · not evaluated"
+    recorded_early = st.session_state.get("early_call_map", {}).get(ticker)
+    recorded_late = st.session_state.get("locked_call_map", {}).get(ticker)
+    early_text = (recorded_early.get("call", "—") + " · " + recorded_early.get("status", "").upper()) if recorded_early else "Not recorded"
+    late_text = (recorded_late.get("call", "—") + " · " + recorded_late.get("status", "").upper()) if recorded_late else "Not recorded"
+    def show_quote(x):
+        return cents(x)
+    close_ms = int(closing.timestamp()*1000) if closing else 0
+    # One tiny browser timer per card; prices change only on real API refreshes.
+    card = f'''<div class="qe-market">
+      <div class="qe-market-head"><span class="qe-market-name">{html.escape(emoji)} {html.escape(name.upper())}</span><span class="qe-live">● KALSHI</span></div>
+      <div class="qe-timer-label">CONTRACT CLOSE</div>
+      <div class="qe-clock" data-close="{close_ms}">--:--</div>
+      <div class="qe-row"><span>TARGET / STRIKE</span><strong>{html.escape(target(market))}</strong></div>
+      <div class="qe-row"><span>UNDERLYING LIVE PRICE</span><strong class="qe-muted">Feed pending</strong></div>
+      <div class="qe-row"><span>PRICE VS TARGET</span><strong class="qe-muted">Not verified</strong></div>
+      <div class="qe-quotes"><div><small>YES BID / ASK</small><strong class="qe-green">{show_quote(bid)} / {show_quote(ask)}</strong></div><div><small>NO BID / ASK</small><strong class="qe-red">{show_quote(no_bid)} / {show_quote(no_ask)}</strong></div></div>
+      <div class="qe-lean {lean_cls}">{html.escape(lean)}</div>
+      <div class="qe-row"><span>EARLY</span><strong>{html.escape(early_text)}</strong></div>
+      <div class="qe-row"><span>MID</span><strong class="qe-muted">Not implemented</strong></div>
+      <div class="qe-row"><span>LATE / 5-MIN LOCK</span><strong>{html.escape(late_text)}</strong></div>
+      <div class="qe-ready">TRADE READINESS: {readiness}</div>
+      <div class="qe-foot">{html.escape(ticker)} · {('Spread '+format(spread,'.1f')+'¢') if spread is not None else 'Spread unavailable'}</div>
+    </div>'''
+    st.markdown(card, unsafe_allow_html=True)
+    # Streamlit markdown sanitizes script tags, so keep browser timer in a separate component
+    # aligned below the overview. The primary visible timer is the browser component below.
+    if closing:
+        components.html(f'''<div style="font-family:system-ui;background:#130d25;color:#d9c8ff;border:1px solid #6f42c1;border-radius:9px;text-align:center;padding:5px;font-size:12px">LIVE COUNTDOWN <b id="clock" style="font-size:18px;color:#54efbd;font-variant-numeric:tabular-nums">--:--</b></div><script>const end={close_ms};const el=document.getElementById('clock');function tick(){{let n=Math.max(0,Math.ceil((end-Date.now())/1000));el.textContent=String(Math.floor(n/60)).padStart(2,'0')+':'+String(n%60).padStart(2,'0');el.style.color=n<=60?'#ff6688':'#54efbd';}}tick();setInterval(tick,250);</script>''', height=46)
 
-st.subheader("💰 Hypothetical Entry Profit Tracker")
-st.caption("Bitcoin + WTI Oil · one simulated contract per WATCH contract · recorded ask, not a confirmed fill. Fees are an adjustable estimate, not an exact Kalshi fee calculation.")
-fee_cents = st.number_input("Assumed total fees per contract (¢)", min_value=0.0, max_value=25.0, value=2.0, step=0.5, key="paper_fee_cents")
-fee = fee_cents / 100
-paper_rows = st.session_state.get("paper_rows", [])
-if st.session_state.get("paper_error"):
-    st.warning("Paper tracker database needs setup or is temporarily unavailable: " + st.session_state.paper_error)
-elif not st.session_state.get("paper_store"):
-    st.warning("Supabase credentials unavailable; paper tracking is disabled.")
-else:
-    graded_paper = [r for r in paper_rows if r.get("status") in ("win", "loss")]
-    pending_paper = sum(r.get("status") == "pending" for r in paper_rows)
-    total_cost = sum(float(r["entry_price"]) + fee for r in graded_paper)
-    total_pnl = sum(paper_pnl(r, fee) for r in graded_paper)
-    cols = st.columns(4)
-    cols[0].metric("Hypothetical net P&L", f"${total_pnl:+.2f}")
-    cols[1].metric("Return on cost", f"{total_pnl / total_cost:+.1%}" if total_cost else "—")
-    cols[2].metric("Settled / Pending", f"{len(graded_paper)} / {pending_paper}")
-    cols[3].metric("Paper win rate", f"{sum(r['status']=='win' for r in graded_paper)/len(graded_paper):.1%}" if graded_paper else "—")
-    for market in ("Bitcoin", "WTI Oil"):
-        market_rows = [r for r in graded_paper if r.get("market_name") == market]
-        st.caption(f"{market}: {len(market_rows)} settled · estimated net P&L ${sum(paper_pnl(r, fee) for r in market_rows):+.2f}")
-    with st.expander(f"📒 View hypothetical entries ({len(paper_rows)})"):
-        if paper_rows:
-            st.dataframe([{"Market":r.get("market_name"), "Side":r.get("side"),
-                           "Entry ask (¢)":round(float(r["entry_price"])*100,1),
-                           "Observed at":r.get("observed_at"), "Contract":r.get("ticker"),
-                           "Status":r.get("status"),
-                           "Est. net P&L ($)":round(paper_pnl(r,fee),2) if paper_pnl(r,fee) is not None else None}
-                          for r in paper_rows], hide_index=True, use_container_width=True)
-        else:
-            st.caption("No WATCH entries saved yet. Keep preview running to collect signals.")
-    st.caption("Simulation assumes one fill at first observed ask per contract and a $1 settlement payout on wins. Real fills, slippage, and fees may differ. Recording requires Streamlit to be running; no automatic trades.")
+st.markdown("### ⚡ LIVE MARKET COMMAND")
+st.caption("Four-market overview · quotes update on Kalshi polling · countdowns tick every second · no automated trades")
+overview_columns = st.columns(4, gap="small")
+for overview_col, market_spec in zip(overview_columns, SERIES):
+    with overview_col:
+        render_overview(*market_spec)
+
+with st.expander("🔍 Detailed market intelligence, pressure radar & contract rules", expanded=False):
+    left, right = st.columns(2, gap="medium")
+    statuses = []
+    with left:
+        statuses.append(("Bitcoin", render_card(*SERIES[0])))
+        statuses.append(("Silver", render_card(*SERIES[2])))
+    with right:
+        statuses.append(("Gold", render_card(*SERIES[1])))
+        statuses.append(("WTI Oil", render_card(*SERIES[3])))
 
 st.subheader("🔒 Locked Call Scoreboard")
 if not call_store:
@@ -720,62 +696,26 @@ else:
     for msg in st.session_state.get("early_tracker_activity", []):
         st.info(msg)
 
-# Phase 4 compact Flip Radar: presentation only. Existing alert detection and trackers unchanged.
-st.markdown('''<style>
-.qe-radar-card{background:linear-gradient(135deg,#1c1533,#0c0c1d);border:1px solid #51327f;border-radius:14px;padding:12px 14px;min-height:142px;margin-bottom:8px}
-.qe-radar-head{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:15px;font-weight:750;color:#f2eaff}
-.qe-radar-chip{font-size:11px;padding:3px 8px;border-radius:20px;font-weight:800}
-.qe-radar-body{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:7px}
-.qe-radar-value{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums}
-.qe-radar-sub{font-size:11px;color:#bdb0d5;margin-top:3px}
-.qe-alert{display:flex;justify-content:space-between;gap:12px;padding:8px 11px;border:1px solid #392d56;background:#131025;border-radius:9px;margin:5px 0;font-size:13px}
-.qe-alert small{color:#aa9bbf}
-</style>''', unsafe_allow_html=True)
-st.markdown("**🚨 Flip Radar — All Markets**")
-st.caption("Live YES quote momentum · latest 30 samples per market")
-radar_cols = st.columns(4, gap="small")
-for col, (name, stat) in zip(radar_cols, statuses):
-    series_code = next(code for market_name, code, _ in SERIES if market_name == name)
-    current = st.session_state.get("radar_active_tickers", {}).get(series_code)
-    samples = st.session_state.quote_history.get(current, []) if current else []
-    vals = [float(sample[1]) * 100 for sample in samples[-30:]]
-    if len(vals) >= 2:
-        lo, hi = min(vals), max(vals)
-        span = max(hi - lo, 1.0)
-        coords = " ".join(f"{4 + i * 108 / (len(vals)-1):.1f},{37 - (v-lo)/span*29:.1f}" for i,v in enumerate(vals))
-        spark = f'<polyline points="{coords}" fill="none" stroke="CURRENT" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>'
-    else:
-        spark = '<path d="M4 23H112" stroke="CURRENT" stroke-width="1.5" stroke-dasharray="4 5"/>'
-    direction = stat["direction"]
-    rising = "↑" in direction
-    falling = "↓" in direction
-    tone = "#34d399" if rising else ("#fb7185" if falling else "#b7a3ed")
-    tag = "BUY ↑" if rising else ("SELL ↓" if falling else "FLAT →")
-    change = f'{stat["magnitude"]:.1f}¢'
-    with col:
-        st.markdown(f'''<div class="qe-radar-card">
-          <div class="qe-radar-head"><span>{html.escape(name)}</span><span class="qe-radar-chip" style="background:{tone}20;color:{tone}">{tag}</span></div>
-          <div class="qe-radar-body"><div><div class="qe-radar-value" style="color:{tone}">{change}</div><div class="qe-radar-sub">Latest YES move</div></div>
-          <svg viewBox="0 0 116 44" style="width:49%;max-width:116px;height:52px;color:{tone}" aria-label="Recent YES quote trend">{spark.replace('CURRENT',tone)}</svg></div>
-          <div class="qe-radar-sub">{len(vals)} quote samples · live session</div>
-        </div>''', unsafe_allow_html=True)
+st.subheader("🚨 Flip Radar — All Markets")
+summary_cols = st.columns(4)
+for col, (name, status) in zip(summary_cols, sorted(statuses, key=lambda s: [x[0] for x in SERIES].index(s[0]))):
+    col.metric(name, status["label"])
 
-events = st.session_state.radar_events
-st.markdown(f"**⚡ Recent alerts** · {len(events)} stored in this session")
-if events:
-    for event in events[:3]:
-        when_local = event["time"].astimezone(CENTRAL).strftime("%I:%M:%S %p")
-        st.markdown(f'<div class="qe-alert"><span><b>{html.escape(event["market"])}</b> · {html.escape(event["detail"])}</span><small>{when_local}</small></div>', unsafe_allow_html=True)
-    with st.expander(f"📜 View full alert history ({len(events)})", expanded=False):
-        for event in events:
-            st.markdown(f"**{event['market']}** · {event['label']} · {event['detail']}")
-            st.caption(f"{event['time'].astimezone(CENTRAL):%I:%M:%S %p %Z} · {event['ticker']}")
+st.markdown("**Momentum ranking**")
+ranked = sorted(statuses, key=lambda item: item[1]["magnitude"], reverse=True)
+for index, (name, stat) in enumerate(ranked, 1):
+    st.write(f"{index}. **{name}** — {stat['direction']} · {stat['magnitude']:.1f}¢ latest change")
+st.caption("Rankings measure absolute YES quote movement between samples, not expected profitability or win probability.")
+
+st.markdown("**Recent dashboard alerts**")
+if st.session_state.radar_events:
+    for event in st.session_state.radar_events[:12]:
+        st.markdown(f"**{event['label']} · {event['market']}** — {event['detail']}")
+        st.caption(f"{event['time'].astimezone(CENTRAL):%I:%M:%S %p %Z} · {event['ticker']}")
 else:
     st.caption("No alerts yet. Keep the dashboard open for several refreshes.")
 
-with st.expander("ℹ️ Radar details & thresholds", expanded=False):
-    st.caption("Charts show sampled Kalshi YES quote movement relative to the first displayed sample for each active contract, not underlying asset price. Chart histories reset on contract changes or session restart.")
-    st.caption("Recent-market arrows show official Kalshi settlement results: YES ↑ / NO ↓. These do not necessarily indicate underlying asset direction.")
-    st.caption(f"Direction flip threshold: 0.5¢ each way · Sudden move: {sudden_cents}¢ per sample. Alerts are price observations, not trading recommendations.")
-st.caption(f"Last refresh: {datetime.now(CENTRAL):%b %d, %Y · %I:%M:%S %p %Z} · Quotes polled every {refresh_seconds}s.")
+st.caption("Recent-market arrows show official Kalshi settlement results: YES ↑ / NO ↓. These are not automatically ABOVE / BELOW unless contract rules establish that mapping.")
+st.caption("Radar thresholds: direction change ≥0.5¢ each way; sudden move ≥" + str(sudden_cents) + "¢ per sample. Quote history lasts only for this Streamlit session. These are price-movement observations, not trading recommendations.")
+st.caption(f"Last refresh: {datetime.now(CENTRAL):%b %d, %Y · %I:%M:%S %p %Z} · Contract countdowns run in your browser; quotes are polled every {refresh_seconds}s.")
 st_autorefresh(interval=refresh_seconds * 1000, key="kalshi_grid_refresh")
