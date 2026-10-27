@@ -612,34 +612,51 @@ else:
         st.info(msg)
 
 # Phase 4 compact Flip Radar: presentation only. Existing alert detection and trackers unchanged.
-st.subheader("🚨 Flip Radar — All Markets")
-st.caption("Live sampled YES quote movement · four markets · most recent alerts")
+st.markdown('''<style>
+.qe-radar-card{background:linear-gradient(135deg,#1c1533,#0c0c1d);border:1px solid #51327f;border-radius:14px;padding:12px 14px;min-height:142px;margin-bottom:8px}
+.qe-radar-head{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:15px;font-weight:750;color:#f2eaff}
+.qe-radar-chip{font-size:11px;padding:3px 8px;border-radius:20px;font-weight:800}
+.qe-radar-body{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:7px}
+.qe-radar-value{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums}
+.qe-radar-sub{font-size:11px;color:#bdb0d5;margin-top:3px}
+.qe-alert{display:flex;justify-content:space-between;gap:12px;padding:8px 11px;border:1px solid #392d56;background:#131025;border-radius:9px;margin:5px 0;font-size:13px}
+.qe-alert small{color:#aa9bbf}
+</style>''', unsafe_allow_html=True)
+st.markdown("**🚨 Flip Radar — All Markets**")
+st.caption("Live YES quote momentum · latest 30 samples per market")
 radar_cols = st.columns(4, gap="small")
 for col, (name, stat) in zip(radar_cols, statuses):
+    series_code = next(code for market_name, code, _ in SERIES if market_name == name)
+    current = st.session_state.get("radar_active_tickers", {}).get(series_code)
+    samples = st.session_state.quote_history.get(current, []) if current else []
+    vals = [float(sample[1]) * 100 for sample in samples[-30:]]
+    if len(vals) >= 2:
+        lo, hi = min(vals), max(vals)
+        span = max(hi - lo, 1.0)
+        coords = " ".join(f"{4 + i * 108 / (len(vals)-1):.1f},{37 - (v-lo)/span*29:.1f}" for i,v in enumerate(vals))
+        spark = f'<polyline points="{coords}" fill="none" stroke="CURRENT" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>'
+    else:
+        spark = '<path d="M4 23H112" stroke="CURRENT" stroke-width="1.5" stroke-dasharray="4 5"/>'
+    direction = stat["direction"]
+    rising = "↑" in direction
+    falling = "↓" in direction
+    tone = "#34d399" if rising else ("#fb7185" if falling else "#b7a3ed")
+    tag = "BUY ↑" if rising else ("SELL ↓" if falling else "FLAT →")
+    change = f'{stat["magnitude"]:.1f}¢'
     with col:
-        st.markdown(f"**{name}**")
-        st.caption(f"{stat['direction']} · {stat['magnitude']:.1f}¢ latest move")
-        # Only plot the currently active ticker; previous contract history is not mixed in.
-        series_code = next(code for market_name, code, _ in SERIES if market_name == name)
-        current = st.session_state.get("radar_active_tickers", {}).get(series_code)
-        samples = st.session_state.quote_history.get(current, []) if current else []
-        if len(samples) >= 2:
-            # Relative YES quote movement in cents, not underlying asset price.
-            baseline = samples[-30][1] if len(samples) >= 30 else samples[0][1]
-            chart_values = [(sample[1] - baseline) * 100 for sample in samples[-30:]]
-            st.line_chart({"YES move (¢)": chart_values}, height=125, use_container_width=True)
-        else:
-            st.caption("📡 Gathering quote samples…")
-
-ranked = sorted(statuses, key=lambda item: item[1]["magnitude"], reverse=True)
-st.caption("Most active now: " + " · ".join(f"{name} {stat['magnitude']:.1f}¢" for name, stat in ranked))
+        st.markdown(f'''<div class="qe-radar-card">
+          <div class="qe-radar-head"><span>{html.escape(name)}</span><span class="qe-radar-chip" style="background:{tone}20;color:{tone}">{tag}</span></div>
+          <div class="qe-radar-body"><div><div class="qe-radar-value" style="color:{tone}">{change}</div><div class="qe-radar-sub">Latest YES move</div></div>
+          <svg viewBox="0 0 116 44" style="width:49%;max-width:116px;height:52px;color:{tone}" aria-label="Recent YES quote trend">{spark.replace('CURRENT',tone)}</svg></div>
+          <div class="qe-radar-sub">{len(vals)} quote samples · live session</div>
+        </div>''', unsafe_allow_html=True)
 
 events = st.session_state.radar_events
 st.markdown(f"**⚡ Recent alerts** · {len(events)} stored in this session")
 if events:
     for event in events[:3]:
         when_local = event["time"].astimezone(CENTRAL).strftime("%I:%M:%S %p")
-        st.markdown(f"**{event['market']}** · {event['label']} · {event['detail']} · {when_local}")
+        st.markdown(f'<div class="qe-alert"><span><b>{html.escape(event["market"])}</b> · {html.escape(event["detail"])}</span><small>{when_local}</small></div>', unsafe_allow_html=True)
     with st.expander(f"📜 View full alert history ({len(events)})", expanded=False):
         for event in events:
             st.markdown(f"**{event['market']}** · {event['label']} · {event['detail']}")
