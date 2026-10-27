@@ -6,6 +6,8 @@ import requests
 import html
 import re
 import streamlit as st
+import base64
+import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 from call_tracker import store_from_secrets, process, candidate, early_store_from_secrets, process_early
 from pressure_radar import show_pressure_radar
@@ -21,7 +23,7 @@ SERIES = [
 HISTORY_LIMIT = 60
 RECENT_RESULTS = 10
 
-st.set_page_config(page_title="Kalshi Market Command Center", page_icon="📡", layout="wide")
+st.set_page_config(page_title="QUEEN’S EDGE | 254", page_icon="👑", layout="wide")
 
 st.markdown("""<style>
 .yes-pill {color:#16a34a;font-weight:800;font-size:1.05rem;}
@@ -39,6 +41,19 @@ st.markdown("""<style>
 .quote-row {display:flex; justify-content:space-between; align-items:center; padding:3px 0; font-size:.93rem; gap:8px;}
 .quote-row b {font-size:1.12rem;}
 </style>""", unsafe_allow_html=True)
+
+
+st.markdown("""<style>
+.stApp{background:radial-gradient(ellipse at top,#1c0b37 0%,#070714 45%,#05050e 100%);color:#e9e6f7}
+.block-container{max-width:1550px!important;padding-top:.55rem!important}
+.qe-banner img{width:100%;max-height:250px;object-fit:cover;border-radius:12px;border:1px solid #6d28d9;box-shadow:0 0 24px #6b21a866}
+.qe-kicker{text-align:center;color:#c4a5ff;letter-spacing:.13em;font-size:.78rem;margin:8px 0 20px}
+[data-testid="stVerticalBlockBorderWrapper"]{background:linear-gradient(145deg,rgba(18,16,33,.95),rgba(8,8,20,.95));border-color:#5b32a6!important;border-radius:13px!important}
+[data-testid="stMetricValue"]{font-variant-numeric:tabular-nums}
+[data-testid="stSidebar"]{background:#0d0920}
+.stApp h1,.stApp h2,.stApp h3{color:#e8d9ff}
+@media(max-width:700px){.qe-banner img{height:135px;object-fit:cover}.qe-kicker{font-size:.62rem;letter-spacing:0}}
+</style>""",unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("⚙️ Radar settings")
@@ -361,8 +376,10 @@ def render_card(name, series, emoji):
             st.info("Upcoming contract — not yet open")
         if closing:
             remaining = max(0, int((closing - now).total_seconds()))
-            st.metric("⏱️ Kalshi contract countdown", f"{remaining // 60:02d}:{remaining % 60:02d}")
-            st.caption(f"Closes at {closing.astimezone(CENTRAL):%I:%M:%S %p %Z} · refreshed every {refresh_seconds}s")
+            _close_ms = int(closing.timestamp() * 1000)
+            components.html(f"""<div style='font-family:system-ui;color:#b994ff;background:#100a20;border:1px solid #6d28d9;border-radius:10px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center'><span style='font-size:12px'>⏱️ NEXT CLOSE</span><b id='clock' style='font-variant-numeric:tabular-nums;font-size:23px;color:#39e9bb'>--:--</b></div><script>const end={_close_ms};const el=document.getElementById('clock');function tick(){{const diff=Math.max(0,Math.ceil((end-Date.now())/1000));const m=Math.floor(diff/60),s=diff%60;el.textContent=String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');el.style.color=diff<=60?'#ff5b75':'#39e9bb';}}tick();setInterval(tick,250);</script>""",height=62)
+
+            st.caption(f"Closes at {closing.astimezone(CENTRAL):%I:%M:%S %p %Z} · timer ticks live; quotes poll every {refresh_seconds}s")
         else:
             st.metric("⏱️ Time remaining", "—")
         if closing:
@@ -447,18 +464,6 @@ def render_card(name, series, emoji):
         st.caption(f"Samples: {count} · Source: {source}")
         direction, strength, magnitude = momentum_stats(m)
         st.markdown(f"**Momentum:** {direction} · {strength}")
-        st.markdown("**📈 YES price trend & radar movements**")
-        quote_samples = st.session_state.quote_history.get(ticker, [])
-        if len(quote_samples) >= 2:
-            # Each point is a sampled Kalshi quote, not a continuous trade-price feed.
-            chart_rows = [
-                {"Time": sample_time.astimezone(CENTRAL), "YES price (¢)": round(sample_price * 100, 2)}
-                for sample_time, sample_price, _ in quote_samples
-            ]
-            st.line_chart(chart_rows, x="Time", y="YES price (¢)", height=190, use_container_width=True)
-            st.caption("Rolling YES quote samples · newest at right · a rising line means YES became more expensive")
-        else:
-            st.caption("Chart warming up — keep this page open for at least two refreshes.")
         st.markdown("**Last 10 settled markets**")
         recent_arrows(series)
         with st.expander("Contract details and rules"):
@@ -516,7 +521,16 @@ if early_store:
     except (requests.RequestException, ValueError) as exc:
         st.session_state["early_tracker_error"] = str(exc)
 
-st.title("📡 Kalshi Market Command Center")
+# QUEEN'S EDGE header - image based on the user-approved design reference.
+from pathlib import Path as _Path
+_banner = _Path(__file__).with_name("queens_banner.jpg")
+if _banner.exists():
+    _encoded = base64.b64encode(_banner.read_bytes()).decode("ascii")
+    st.markdown(f'<div class="qe-banner"><img src="data:image/jpeg;base64,{_encoded}" alt="QUEEN’S EDGE — purple bull and bear banner" /></div>', unsafe_allow_html=True)
+else:
+    st.title("👑 QUEEN’S EDGE")
+st.markdown('<div class="qe-kicker">⚡ LIVE KALSHI MARKETS &nbsp; • &nbsp; BUILT BY K HENDO | 254 &nbsp; • &nbsp; READ ONLY</div>', unsafe_allow_html=True)
+
 st.caption("15-minute markets · Kalshi contract-aligned countdowns · Dashboard-only Flip Radar · Read-only")
 st.caption(f"⟳ Refresh interval: {refresh_seconds}s · API quotes may lag or be rate-limited · not a streaming connection")
 st.info("Radar detects quote reversals. The experimental settlement call reflects Kalshi market-implied pricing, not a validated independent forecast. No trades are executed.")
@@ -604,32 +618,6 @@ summary_cols = st.columns(4)
 for col, (name, status) in zip(summary_cols, sorted(statuses, key=lambda s: [x[0] for x in SERIES].index(s[0]))):
     col.metric(name, status["label"])
 
-st.subheader("📊 All-market momentum comparison")
-st.caption("Latest absolute change in YES quote price, in cents per sample. Taller bars mean larger recent movement, not better trade odds.")
-momentum_chart = [
-    {"Market": name, "Movement (¢)": round(status["magnitude"], 2)}
-    for name, status in sorted(statuses, key=lambda x: [item[0] for item in SERIES].index(x[0]))
-]
-st.bar_chart(momentum_chart, x="Market", y="Movement (¢)", height=250, use_container_width=True)
-
-st.subheader("📉 Recent settled results comparison")
-st.caption("Shows counts of YES and NO outcomes among up to 10 recent settled contracts for each series. These are contract outcomes, not asset up/down moves.")
-result_counts = []
-for series_name, series_ticker, _ in SERIES:
-    try:
-        recent = fetch_recent_results(series_ticker)
-    except (requests.RequestException, ValueError):
-        recent = []
-    result_counts.append({
-        "Market": series_name,
-        "YES settled": sum(str(m.get("result", "")).lower() == "yes" for m in recent),
-        "NO settled": sum(str(m.get("result", "")).lower() == "no" for m in recent),
-    })
-if any(row["YES settled"] or row["NO settled"] for row in result_counts):
-    st.bar_chart(result_counts, x="Market", y=["YES settled", "NO settled"], height=250, use_container_width=True)
-else:
-    st.caption("Waiting for settled result data from Kalshi.")
-
 st.markdown("**Momentum ranking**")
 ranked = sorted(statuses, key=lambda item: item[1]["magnitude"], reverse=True)
 for index, (name, stat) in enumerate(ranked, 1):
@@ -646,5 +634,5 @@ else:
 
 st.caption("Recent-market arrows show official Kalshi settlement results: YES ↑ / NO ↓. These are not automatically ABOVE / BELOW unless contract rules establish that mapping.")
 st.caption("Radar thresholds: direction change ≥0.5¢ each way; sudden move ≥" + str(sudden_cents) + "¢ per sample. Quote history lasts only for this Streamlit session. These are price-movement observations, not trading recommendations.")
-st.caption(f"Last refresh: {datetime.now(CENTRAL):%b %d, %Y · %I:%M:%S %p %Z} · Contract countdowns align to Kalshi close timestamps; updates are not guaranteed every {refresh_seconds}s.")
+st.caption(f"Last refresh: {datetime.now(CENTRAL):%b %d, %Y · %I:%M:%S %p %Z} · Contract countdowns run in your browser; quotes are polled every {refresh_seconds}s.")
 st_autorefresh(interval=refresh_seconds * 1000, key="kalshi_grid_refresh")
