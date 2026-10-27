@@ -373,19 +373,32 @@ def smart_entry_advisor(name, m, verified, remaining, direction):
     ticker = m.get("ticker", "")
     hist = st.session_state.quote_history.get(ticker, [])
     side = None
+    # Ignore zero-change polling samples. Confirm two meaningful consecutive
+    # directional changes within 90 seconds, using the current contract only.
+    meaningful_moves = []
     if verified and len(hist) >= 3:
-        changes = [hist[i][1] - hist[i-1][1] for i in range(-2, 0)]
-        if all(d >= .005 for d in changes):
-            side = "ABOVE"
-        elif all(d <= -.005 for d in changes):
-            side = "BELOW"
+        latest_time = hist[-1][0]
+        for i in range(1, len(hist)):
+            sample_time = hist[i][0]
+            if (latest_time - sample_time).total_seconds() > 90:
+                continue
+            delta = hist[i][1] - hist[i - 1][1]
+            if delta >= 0.005:
+                meaningful_moves.append(1)
+            elif delta <= -0.005:
+                meaningful_moves.append(-1)
+        if len(meaningful_moves) >= 2:
+            if meaningful_moves[-2:] == [1, 1]:
+                side = "ABOVE"
+            elif meaningful_moves[-2:] == [-1, -1]:
+                side = "BELOW"
     ask = yes_ask if side == "ABOVE" else no_ask if side == "BELOW" else None
     if not verified:
         status, reason = "WAIT", "Contract direction not verified"
     elif remaining is None or remaining <= 30:
         status, reason = "SKIP", "Too close to settlement or closing time unavailable"
     elif side is None:
-        status, reason = "WAIT", "Need two consecutive quote moves in the same direction"
+        status, reason = "WAIT", "Need two meaningful same-direction quote moves within 90 seconds"
     elif ask is None or not (0 < ask < 1):
         status, reason = "WAIT", "Executable ask quote unavailable"
     elif ask >= .90:
