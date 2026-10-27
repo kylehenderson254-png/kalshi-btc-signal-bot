@@ -11,6 +11,7 @@ import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 from call_tracker import store_from_secrets, process, candidate, early_store_from_secrets, process_early
 from pressure_radar import show_pressure_radar
+from paper_tracker import from_secrets as paper_store_from_secrets, grade_pending as paper_grade_pending, pnl as paper_pnl
 
 API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 CENTRAL = ZoneInfo("America/Chicago")
@@ -414,7 +415,14 @@ def smart_entry_advisor(name, m, verified, remaining, direction):
                 f'<div style="color:#c8c1da;font-size:.79rem">{html.escape(reason)}</div></div>', unsafe_allow_html=True)
     if ask is not None:
         st.caption(f"{side} ask {ask*100:.1f}¢ · payout if correct {(1-ask)*100:.1f}¢ · loss if wrong {ask*100:.1f}¢ · break-even >{ask*100:.1f}% after fees")
-    st.caption("WATCH is not a buy instruction. Quote momentum alone cannot establish positive expected value. Read-only; no orders placed or recorded.")
+    if status == "WATCH" and ask is not None and ticker and st.session_state.get("paper_store"):
+        try:
+            closing = when(m.get("close_time") or m.get("latest_expiration_time"))
+            st.session_state.paper_store.record_once(name, ticker, side, ask, closing)
+            st.caption("📒 First WATCH for this contract saved as a hypothetical one-contract entry.")
+        except requests.RequestException as exc:
+            st.warning(f"Paper entry could not be saved: {exc}")
+    st.caption("WATCH is not a buy instruction. Paper entries assume an immediate fill at the observed ask, which is not guaranteed. No orders are placed.")
 
 
 def render_card(name, series, emoji):
@@ -570,6 +578,18 @@ if early_store:
     except (requests.RequestException, ValueError) as exc:
         st.session_state["early_tracker_error"] = str(exc)
 
+# Separate paper-entry storage. Existing call trackers are not modified.
+st.session_state["paper_store"] = paper_store_from_secrets(st.secrets)
+st.session_state["paper_rows"] = []
+st.session_state["paper_error"] = None
+if st.session_state["paper_store"]:
+    try:
+        rows = st.session_state.paper_store.all()
+        paper_grade_pending(st.session_state.paper_store, rows)
+        st.session_state["paper_rows"] = st.session_state.paper_store.all()
+    except (requests.RequestException, ValueError) as exc:
+        st.session_state["paper_error"] = str(exc)
+
 # QUEEN'S EDGE header - image based on the user-approved design reference.
 from pathlib import Path as _Path
 _banner = _Path(__file__).with_name("queens_banner.jpg")
@@ -597,6 +617,40 @@ with bottom_left:
     statuses.append(("Gold", render_card("Gold", "KXGOLD15M", "🥇")))
 with bottom_right:
     statuses.append(("Silver", render_card("Silver", "KXSILVER15M", "🥈")))
+
+st.subheader("💰 Hypothetical Entry Profit Tracker")
+st.caption("Bitcoin + WTI Oil · one simulated contract per WATCH contract · recorded ask, not a confirmed fill. Fees are an adjustable estimate, not an exact Kalshi fee calculation.")
+fee_cents = st.number_input("Assumed total fees per contract (¢)", min_value=0.0, max_value=25.0, value=2.0, step=0.5, key="paper_fee_cents")
+fee = fee_cents / 100
+paper_rows = st.session_state.get("paper_rows", [])
+if st.session_state.get("paper_error"):
+    st.warning("Paper tracker database needs setup or is temporarily unavailable: " + st.session_state.paper_error)
+elif not st.session_state.get("paper_store"):
+    st.warning("Supabase credentials unavailable; paper tracking is disabled.")
+else:
+    graded_paper = [r for r in paper_rows if r.get("status") in ("win", "loss")]
+    pending_paper = sum(r.get("status") == "pending" for r in paper_rows)
+    total_cost = sum(float(r["entry_price"]) + fee for r in graded_paper)
+    total_pnl = sum(paper_pnl(r, fee) for r in graded_paper)
+    cols = st.columns(4)
+    cols[0].metric("Hypothetical net P&L", f"${total_pnl:+.2f}")
+    cols[1].metric("Return on cost", f"{total_pnl / total_cost:+.1%}" if total_cost else "—")
+    cols[2].metric("Settled / Pending", f"{len(graded_paper)} / {pending_paper}")
+    cols[3].metric("Paper win rate", f"{sum(r['status']=='win' for r in graded_paper)/len(graded_paper):.1%}" if graded_paper else "—")
+    for market in ("Bitcoin", "WTI Oil"):
+        market_rows = [r for r in graded_paper if r.get("market_name") == market]
+        st.caption(f"{market}: {len(market_rows)} settled · estimated net P&L ${sum(paper_pnl(r, fee) for r in market_rows):+.2f}")
+    with st.expander(f"📒 View hypothetical entries ({len(paper_rows)})"):
+        if paper_rows:
+            st.dataframe([{"Market":r.get("market_name"), "Side":r.get("side"),
+                           "Entry ask (¢)":round(float(r["entry_price"])*100,1),
+                           "Observed at":r.get("observed_at"), "Contract":r.get("ticker"),
+                           "Status":r.get("status"),
+                           "Est. net P&L ($)":round(paper_pnl(r,fee),2) if paper_pnl(r,fee) is not None else None}
+                          for r in paper_rows], hide_index=True, use_container_width=True)
+        else:
+            st.caption("No WATCH entries saved yet. Keep preview running to collect signals.")
+    st.caption("Simulation assumes one fill at first observed ask per contract and a $1 settlement payout on wins. Real fills, slippage, and fees may differ. Recording requires Streamlit to be running; no automatic trades.")
 
 st.subheader("🔒 Locked Call Scoreboard")
 if not call_store:
