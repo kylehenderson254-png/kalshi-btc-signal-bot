@@ -55,6 +55,18 @@ st.markdown("""<style>
 @media(max-width:700px){.qe-banner img{height:135px;object-fit:cover}.qe-kicker{font-size:.62rem;letter-spacing:0}}
 </style>""",unsafe_allow_html=True)
 
+st.markdown("""<style>
+.qe-market-name{font-size:1.2rem;font-weight:900;letter-spacing:.08em;color:#e6d4ff;margin-bottom:4px}
+.qe-compact-quote{border:1px solid;border-radius:12px;padding:10px 9px;min-height:112px;font-size:.78rem;line-height:1.8;font-variant-numeric:tabular-nums}
+.qe-compact-quote div:not(.qe-quote-heading){display:flex;justify-content:space-between;gap:3px}
+.qe-compact-quote b{font-size:.94rem}
+.qe-quote-heading{font-weight:800;font-size:.75rem;min-height:32px;line-height:1.2;margin-bottom:4px}
+.qe-green{background:rgba(15,140,84,.12);border-color:#178d61;color:#58e6aa}
+.qe-red{background:rgba(180,35,70,.12);border-color:#ad3358;color:#ff8ca2}
+[data-testid="stVerticalBlockBorderWrapper"]{border-color:#6d28d9!important}
+@media(max-width:700px){.qe-market-name{font-size:1.05rem}.qe-compact-quote{padding:7px 5px;font-size:.7rem}.qe-compact-quote b{font-size:.78rem}}
+</style>""",unsafe_allow_html=True)
+
 with st.sidebar:
     st.header("⚙️ Radar settings")
     refresh_seconds = st.selectbox("Refresh every", [3, 5, 10, 15], index=0, format_func=lambda s: f"{s} seconds")
@@ -353,8 +365,9 @@ def scan(m, name):
 
 
 def render_card(name, series, emoji):
+    """Compact, consistently ordered market card; detailed tools remain accessible."""
     with st.container(border=True):
-        st.subheader(f"{emoji} {name}")
+        st.markdown(f'<div class="qe-market-name">{emoji} {html.escape(name.upper())}</div>', unsafe_allow_html=True)
         try:
             markets = fetch_markets(series)
         except (requests.RequestException, ValueError) as exc:
@@ -363,114 +376,91 @@ def render_card(name, series, emoji):
             return {"label": "Unavailable", "magnitude": 0, "direction": "—"}
         m = current_market(markets)
         if not m:
-            st.warning("No open 15-minute contract returned")
-            st.caption(f"Series: {series}. Confirm the series ticker and availability on Kalshi.")
+            st.warning("No active 15-minute contract")
             return {"label": "No market", "magnitude": 0, "direction": "—"}
+
         ticker = m.get("ticker", series)
-        st.caption(m.get("title") or ticker)
-        st.caption(f"Contract: {ticker}")
         closing = when(m.get("close_time") or m.get("latest_expiration_time"))
         opening = when(m.get("open_time"))
         now = datetime.now(timezone.utc)
-        if opening and opening > now:
-            st.info("Upcoming contract — not yet open")
-        if closing:
-            remaining = max(0, int((closing - now).total_seconds()))
-            _close_ms = int(closing.timestamp() * 1000)
-            components.html(f"""<div style='font-family:system-ui;color:#b994ff;background:#100a20;border:1px solid #6d28d9;border-radius:10px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center'><span style='font-size:12px'>⏱️ NEXT CLOSE</span><b id='clock' style='font-variant-numeric:tabular-nums;font-size:23px;color:#39e9bb'>--:--</b></div><script>const end={_close_ms};const el=document.getElementById('clock');function tick(){{const diff=Math.max(0,Math.ceil((end-Date.now())/1000));const m=Math.floor(diff/60),s=diff%60;el.textContent=String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');el.style.color=diff<=60?'#ff5b75':'#39e9bb';}}tick();setInterval(tick,250);</script>""",height=62)
+        remaining = max(0, int((closing - now).total_seconds())) if closing else None
+        above_label, below_label, verified = directional_labels(m)
+        label, detail, count, source = scan(m, name)
+        direction, strength, magnitude = momentum_stats(m)
+        bid = price(m, "yes_bid_dollars", "yes_bid")
+        ask = price(m, "yes_ask_dollars", "yes_ask")
+        midpoint_val = (bid + ask) / 2 if bid is not None and ask is not None and 0 <= bid <= ask <= 1 else None
 
-            st.caption(f"Closes at {closing.astimezone(CENTRAL):%I:%M:%S %p %Z} · timer ticks live; quotes poll every {refresh_seconds}s")
-        else:
-            st.metric("⏱️ Time remaining", "—")
+        st.caption(f"Target / strike: **{target(m)}**")
         if closing:
-            remaining_seconds = max(0, int((closing - now).total_seconds()))
-            if remaining_seconds <= 60:
-                st.error("⏳ FINAL MINUTE — signals can change quickly")
-            elif remaining_seconds <= 180:
-                st.warning("⏳ Less than 3 minutes remain")
-        above_label, below_label, verified_direction = directional_labels(m)
-        st.markdown("**Above / Below target — Kalshi bid and ask**" if verified_direction else "**Kalshi YES / NO bid and ask**")
-        if not verified_direction:
-            st.caption("Direction not confirmed by available contract-rule text. Showing official YES / NO labels for accuracy.")
-        yes_bid = cents(price(m, "yes_bid_dollars", "yes_bid"))
-        yes_ask = cents(price(m, "yes_ask_dollars", "yes_ask"))
+            end_ms = int(closing.timestamp() * 1000)
+            components.html(f"""<div style="height:48px;background:#120a25;border:1px solid #6d28d9;border-radius:10px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;font-family:system-ui;color:#c4a5ff"><span style="font-size:12px">⏱️ CLOSES IN</span><strong id="clock" style="font-size:24px;color:#39e9bb;font-variant-numeric:tabular-nums">--:--</strong></div><script>const end={end_ms},el=document.getElementById("clock");function tick(){{let n=Math.max(0,Math.ceil((end-Date.now())/1000));el.textContent=String(Math.floor(n/60)).padStart(2,"0")+":"+String(n%60).padStart(2,"0");el.style.color=n<=60?"#ff5b75":"#39e9bb";}}tick();setInterval(tick,250);</script>""", height=52)
+        else:
+            st.caption("Close time unavailable")
+
+        yes_bid = cents(bid)
+        yes_ask = cents(ask)
         no_bid = cents(price(m, "no_bid_dollars", "no_bid"))
         no_ask = cents(price(m, "no_ask_dollars", "no_ask"))
-        # Visual quote tiles only. Not buttons: no click action and no trading API credentials.
-        yes_col, no_col = st.columns(2, gap="small")
-        with yes_col:
+        col_yes, col_no = st.columns(2, gap="small")
+        with col_yes:
             st.markdown(
-                f'<div class="quote-tile yes-tile"><div class="quote-title">🟢 {above_label}</div>'
-                f'<div class="quote-row"><span>BID</span><b>{html.escape(yes_bid)}</b></div>'
-                f'<div class="quote-row"><span>ASK</span><b>{html.escape(yes_ask)}</b></div>'
-                f'</div>', unsafe_allow_html=True,
-            )
-        with no_col:
+                f'<div class="qe-compact-quote qe-green"><div class="qe-quote-heading">{html.escape(above_label if verified else "YES")}</div>'
+                f'<div>BID <b>{html.escape(yes_bid)}</b></div><div>ASK <b>{html.escape(yes_ask)}</b></div></div>',
+                unsafe_allow_html=True)
+        with col_no:
             st.markdown(
-                f'<div class="quote-tile no-tile"><div class="quote-title">🔴 {below_label}</div>'
-                f'<div class="quote-row"><span>BID</span><b>{html.escape(no_bid)}</b></div>'
-                f'<div class="quote-row"><span>ASK</span><b>{html.escape(no_ask)}</b></div>'
-                f'</div>', unsafe_allow_html=True,
-            )
-        st.caption("Quote display only · No trading actions · ABOVE maps to YES only when verified from contract rules")
-        show_pressure_radar(name, ticker)
-        e, f = st.columns(2)
-        e.metric("Target / strike", target(m))
-        f.metric("Last YES", cents(price(m, "last_price_dollars", "last_price")))
-        label, detail, count, source = scan(m, name)
-        st.markdown("**🌅 Early call — live preview (not locked)**")
-        if not closing or (opening and opening > now):
-            st.caption("Waiting for an active contract with a closing time.")
-        elif remaining > 300:
-            early_bid = price(m, "yes_bid_dollars", "yes_bid")
-            early_ask = price(m, "yes_ask_dollars", "yes_ask")
-            if not verified_direction:
-                st.caption("No early call: ABOVE/BELOW meaning is not verified from the contract rules.")
-            elif early_bid is None or early_ask is None or not (0 <= early_bid <= early_ask <= 1) or early_ask - early_bid > 0.15 or (early_bid == 0 and early_ask == 1):
-                st.caption("No early call: reliable YES bid/ask quotes are unavailable or spread is too wide.")
+                f'<div class="qe-compact-quote qe-red"><div class="qe-quote-heading">{html.escape(below_label if verified else "NO")}</div>'
+                f'<div>BID <b>{html.escape(no_bid)}</b></div><div>ASK <b>{html.escape(no_ask)}</b></div></div>',
+                unsafe_allow_html=True)
+
+        if not verified:
+            st.caption("Direction unverified — YES/NO labels retained")
+        if midpoint_val is not None and verified and ask - bid <= .15:
+            if midpoint_val >= .60:
+                lean = "🟢 ABOVE"
+            elif midpoint_val <= .40:
+                lean = "🔴 BELOW"
             else:
-                early_mid = (early_bid + early_ask) / 2
-                if early_mid >= 0.60:
-                    st.success(f"EARLY LEAN: ABOVE TARGET ↑ · YES quote midpoint {early_mid * 100:.1f}¢")
-                elif early_mid <= 0.40:
-                    st.error(f"EARLY LEAN: BELOW TARGET ↓ · YES quote midpoint {early_mid * 100:.1f}¢")
-                else:
-                    st.info(f"EARLY LEAN: NO CLEAR CALL · YES quote midpoint {early_mid * 100:.1f}¢")
-                st.caption("Live preview can change. The first eligible early signal is recorded separately and graded after official settlement; the 5-minute locked call remains independent.")
+                lean = "⚪ NO CALL"
+            st.markdown(f"**Market lean: {lean}** · YES midpoint {midpoint_val*100:.1f}¢")
         else:
-            st.caption("Early preview window has ended. Check the 5-minute locked call below.")
-        early_saved = st.session_state.get("early_call_map", {}).get(ticker)
-        if early_saved:
-            st.caption(f"📜 Recorded early call: {early_saved['call']} · {early_saved['status'].upper()} · "
-                       f"YES midpoint {early_saved['yes_midpoint'] * 100:.1f}¢ · {early_saved['locked_at']} UTC")
-        prediction_panel(m, verified_direction, remaining if closing else None, ticker)
-        st.markdown("**🔒 Automatic 5-minute locked call**")
-        stored = st.session_state.get("locked_call_map", {}).get(ticker)
-        if stored:
-            label = "🟢 ABOVE" if stored["call"] == "ABOVE" else "🔴 BELOW"
-            st.markdown(f"**LOCKED: {label}** · {stored['status'].upper()}")
-            st.caption(f"Locked at {stored['locked_at']} · quote midpoint {stored['yes_midpoint'] * 100:.1f}¢")
-        elif st.session_state.get("tracker_enabled"):
-            row, reason = candidate(m, name, series)
-            st.caption("Eligible for automatic lock now" if row else (reason or "Waiting for lock"))
-        else:
-            st.caption("Persistent call tracking not configured; see README setup instructions.")
-        st.divider()
-        st.markdown("**📡 Flip Radar**")
-        if label.startswith("🔺") or label.startswith("🔻") or label.startswith("⚡"):
-            st.warning(f"{label} — {detail}")
-        else:
-            st.caption(f"{label} · {detail}")
-        st.caption(f"Samples: {count} · Source: {source}")
-        direction, strength, magnitude = momentum_stats(m)
-        st.markdown(f"**Momentum:** {direction} · {strength}")
-        st.markdown("**Last 10 settled markets**")
-        recent_arrows(series)
-        with st.expander("Contract details and rules"):
-            st.write(f"Market ticker: {ticker}")
-            st.write(f"Closes (Central): {closing.astimezone(CENTRAL):%b %d, %I:%M:%S %p %Z}" if closing else "Close time not provided")
-            st.write(m.get("rules_primary") or "Primary rules not included in response; check Kalshi.")
-            st.write(m.get("rules_secondary") or "")
+            st.caption("Market lean unavailable · verify quotes/rules")
+
+        early = st.session_state.get("early_call_map", {}).get(ticker)
+        locked = st.session_state.get("locked_call_map", {}).get(ticker)
+        st.markdown(f"**🌅 Early:** {html.escape(str(early['call'])) if early else 'Live preview only'}")
+        st.markdown(f"**🔒 Locked:** {html.escape(str(locked['call'])) + ' · ' + html.escape(str(locked['status'])) if locked else 'Not recorded in preview'}")
+        st.caption(f"📡 {label} · {direction} · {strength}")
+        with st.expander("Radar, call details & history", expanded=False):
+            st.caption(f"Contract: {ticker}")
+            st.caption(f"Closes: {closing.astimezone(CENTRAL):%I:%M:%S %p %Z}" if closing else "Close time unknown")
+            st.caption(f"Quotes poll every {refresh_seconds}s; countdown updates locally")
+            st.caption("Quote display only. No trading actions.")
+            st.markdown("**🐋 Buying / Selling Pressure & Whale Radar**")
+            show_pressure_radar(name, ticker)
+            st.markdown("**🌅 Early call — live preview (not locked)**")
+            if closing and (not opening or opening <= now) and remaining > 300 and midpoint_val is not None and verified and ask - bid <= .15:
+                st.write(f"Current early lean: {lean} · YES midpoint {midpoint_val*100:.1f}¢")
+            else:
+                st.caption("Early preview unavailable or early window has ended.")
+            st.caption("Live lean can change; recorded early and locked calls are separate.")
+            prediction_panel(m, verified, remaining, ticker)
+            st.markdown("**🔒 Automatic 5-minute locked call**")
+            if locked:
+                st.write(f"{locked['call']} · {locked['status']} · {locked['locked_at']}")
+            elif st.session_state.get("tracker_enabled"):
+                row, reason = candidate(m, name, series)
+                st.caption("Eligible to lock" if row else (reason or "Waiting"))
+            else:
+                st.caption("Supabase secrets not configured in preview.")
+            st.markdown("**📡 Flip Radar**")
+            st.caption(f"{label} · {detail} · {count} samples · {source}")
+            st.markdown("**Last 10 settled markets**")
+            recent_arrows(series)
+            with st.expander("Official contract rules"):
+                st.write(m.get("rules_primary") or "Check Kalshi for contract rules.")
+                st.write(m.get("rules_secondary") or "")
         return {"label": label, "magnitude": magnitude, "direction": direction}
 
 
@@ -535,15 +525,19 @@ st.caption("15-minute markets · Kalshi contract-aligned countdowns · Dashboard
 st.caption(f"⟳ Refresh interval: {refresh_seconds}s · API quotes may lag or be rate-limited · not a streaming connection")
 st.info("Radar detects quote reversals. The experimental settlement call reflects Kalshi market-implied pricing, not a validated independent forecast. No trades are executed.")
 
-# Streamlit columns collapse vertically on narrower screens.
-left, right = st.columns(2, gap="medium")
+# Two matched rows. Bitcoin and Oil always appear side by side.
+st.markdown("### ⚡ LIVE MARKET GRID")
 statuses = []
-with left:
-    statuses.append(("Bitcoin", render_card(*SERIES[0])))
-    statuses.append(("Silver", render_card(*SERIES[2])))
-with right:
-    statuses.append(("Gold", render_card(*SERIES[1])))
-    statuses.append(("WTI Oil", render_card(*SERIES[3])))
+top_left, top_right = st.columns(2, gap="small")
+with top_left:
+    statuses.append(("Bitcoin", render_card("Bitcoin", "KXBTC15M", "₿")))
+with top_right:
+    statuses.append(("WTI Oil", render_card("WTI Oil", "KXWTI15M", "🛢️")))
+bottom_left, bottom_right = st.columns(2, gap="small")
+with bottom_left:
+    statuses.append(("Gold", render_card("Gold", "KXGOLD15M", "🥇")))
+with bottom_right:
+    statuses.append(("Silver", render_card("Silver", "KXSILVER15M", "🥈")))
 
 st.subheader("🔒 Locked Call Scoreboard")
 if not call_store:
