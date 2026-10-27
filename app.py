@@ -364,6 +364,46 @@ def scan(m, name):
     return "Scanning", "No flip detected in latest sample", len(hist), source
 
 
+def smart_entry_advisor(name, m, verified, remaining, direction):
+    """Conservative read-only entry watchlist; no claim of proven trading edge."""
+    if name not in ("Bitcoin", "WTI Oil"):
+        return
+    yes_ask = price(m, "yes_ask_dollars", "yes_ask")
+    no_ask = price(m, "no_ask_dollars", "no_ask")
+    ticker = m.get("ticker", "")
+    hist = st.session_state.quote_history.get(ticker, [])
+    side = None
+    if verified and len(hist) >= 3:
+        changes = [hist[i][1] - hist[i-1][1] for i in range(-2, 0)]
+        if all(d >= .005 for d in changes):
+            side = "ABOVE"
+        elif all(d <= -.005 for d in changes):
+            side = "BELOW"
+    ask = yes_ask if side == "ABOVE" else no_ask if side == "BELOW" else None
+    if not verified:
+        status, reason = "WAIT", "Contract direction not verified"
+    elif remaining is None or remaining <= 30:
+        status, reason = "SKIP", "Too close to settlement or closing time unavailable"
+    elif side is None:
+        status, reason = "WAIT", "Need two consecutive quote moves in the same direction"
+    elif ask is None or not (0 < ask < 1):
+        status, reason = "WAIT", "Executable ask quote unavailable"
+    elif ask >= .90:
+        status, reason = "SKIP", "High entry cost leaves little upside"
+    elif ask > .80:
+        status, reason = "WAIT", "Entry price above the 80¢ watch threshold"
+    else:
+        status, reason = "WATCH", "Directional momentum aligns; profitability remains unproven"
+    tone = {"WATCH":"#45dfaa", "WAIT":"#e9c46a", "SKIP":"#ff7e98"}[status]
+    st.markdown(f'<div style="border:1px solid #6542a6;border-radius:11px;padding:10px;background:#110d23;margin-top:8px">'
+                f'<div style="color:#c8aaff;font-size:.78rem;font-weight:800">🎯 SMART ENTRY ADVISOR · EXPERIMENTAL</div>'
+                f'<div style="font-size:1.05rem;font-weight:850;color:{tone}">{status} · {html.escape(side or "NO SIDE")}</div>'
+                f'<div style="color:#c8c1da;font-size:.79rem">{html.escape(reason)}</div></div>', unsafe_allow_html=True)
+    if ask is not None:
+        st.caption(f"{side} ask {ask*100:.1f}¢ · payout if correct {(1-ask)*100:.1f}¢ · loss if wrong {ask*100:.1f}¢ · break-even >{ask*100:.1f}% after fees")
+    st.caption("WATCH is not a buy instruction. Quote momentum alone cannot establish positive expected value. Read-only; no orders placed or recorded.")
+
+
 def render_card(name, series, emoji):
     """Compact, consistently ordered market card; detailed tools remain accessible."""
     with st.container(border=True):
@@ -430,6 +470,8 @@ def render_card(name, series, emoji):
             st.markdown(f"**Market lean: {lean}** · YES midpoint {midpoint_val*100:.1f}¢")
         else:
             st.caption("Market lean unavailable · verify quotes/rules")
+
+        smart_entry_advisor(name, m, verified, remaining, direction)
 
         early = st.session_state.get("early_call_map", {}).get(ticker)
         locked = st.session_state.get("locked_call_map", {}).get(ticker)
