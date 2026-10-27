@@ -375,6 +375,10 @@ def render_card(name, series, emoji):
             st.caption(f"{series}: {exc}")
             return {"label": "Unavailable", "magnitude": 0, "direction": "—"}
         m = current_market(markets)
+        if m:
+            st.session_state.setdefault("radar_active_tickers", {})[series] = m.get("ticker")
+        else:
+            st.session_state.setdefault("radar_active_tickers", {}).pop(series, None)
         if not m:
             st.warning("No active 15-minute contract")
             return {"label": "No market", "magnitude": 0, "direction": "—"}
@@ -607,26 +611,45 @@ else:
     for msg in st.session_state.get("early_tracker_activity", []):
         st.info(msg)
 
+# Phase 4 compact Flip Radar: presentation only. Existing alert detection and trackers unchanged.
 st.subheader("🚨 Flip Radar — All Markets")
-summary_cols = st.columns(4)
-for col, (name, status) in zip(summary_cols, sorted(statuses, key=lambda s: [x[0] for x in SERIES].index(s[0]))):
-    col.metric(name, status["label"])
+st.caption("Live sampled YES quote movement · four markets · most recent alerts")
+radar_cols = st.columns(4, gap="small")
+for col, (name, stat) in zip(radar_cols, statuses):
+    with col:
+        st.markdown(f"**{name}**")
+        st.caption(f"{stat['direction']} · {stat['magnitude']:.1f}¢ latest move")
+        # Only plot the currently active ticker; previous contract history is not mixed in.
+        series_code = next(code for market_name, code, _ in SERIES if market_name == name)
+        current = st.session_state.get("radar_active_tickers", {}).get(series_code)
+        samples = st.session_state.quote_history.get(current, []) if current else []
+        if len(samples) >= 2:
+            # Relative YES quote movement in cents, not underlying asset price.
+            baseline = samples[-30][1] if len(samples) >= 30 else samples[0][1]
+            chart_values = [(sample[1] - baseline) * 100 for sample in samples[-30:]]
+            st.line_chart({"YES move (¢)": chart_values}, height=125, use_container_width=True)
+        else:
+            st.caption("📡 Gathering quote samples…")
 
-st.markdown("**Momentum ranking**")
 ranked = sorted(statuses, key=lambda item: item[1]["magnitude"], reverse=True)
-for index, (name, stat) in enumerate(ranked, 1):
-    st.write(f"{index}. **{name}** — {stat['direction']} · {stat['magnitude']:.1f}¢ latest change")
-st.caption("Rankings measure absolute YES quote movement between samples, not expected profitability or win probability.")
+st.caption("Most active now: " + " · ".join(f"{name} {stat['magnitude']:.1f}¢" for name, stat in ranked))
 
-st.markdown("**Recent dashboard alerts**")
-if st.session_state.radar_events:
-    for event in st.session_state.radar_events[:12]:
-        st.markdown(f"**{event['label']} · {event['market']}** — {event['detail']}")
-        st.caption(f"{event['time'].astimezone(CENTRAL):%I:%M:%S %p %Z} · {event['ticker']}")
+events = st.session_state.radar_events
+st.markdown(f"**⚡ Recent alerts** · {len(events)} stored in this session")
+if events:
+    for event in events[:3]:
+        when_local = event["time"].astimezone(CENTRAL).strftime("%I:%M:%S %p")
+        st.markdown(f"**{event['market']}** · {event['label']} · {event['detail']} · {when_local}")
+    with st.expander(f"📜 View full alert history ({len(events)})", expanded=False):
+        for event in events:
+            st.markdown(f"**{event['market']}** · {event['label']} · {event['detail']}")
+            st.caption(f"{event['time'].astimezone(CENTRAL):%I:%M:%S %p %Z} · {event['ticker']}")
 else:
     st.caption("No alerts yet. Keep the dashboard open for several refreshes.")
 
-st.caption("Recent-market arrows show official Kalshi settlement results: YES ↑ / NO ↓. These are not automatically ABOVE / BELOW unless contract rules establish that mapping.")
-st.caption("Radar thresholds: direction change ≥0.5¢ each way; sudden move ≥" + str(sudden_cents) + "¢ per sample. Quote history lasts only for this Streamlit session. These are price-movement observations, not trading recommendations.")
-st.caption(f"Last refresh: {datetime.now(CENTRAL):%b %d, %Y · %I:%M:%S %p %Z} · Contract countdowns run in your browser; quotes are polled every {refresh_seconds}s.")
+with st.expander("ℹ️ Radar details & thresholds", expanded=False):
+    st.caption("Charts show sampled Kalshi YES quote movement relative to the first displayed sample for each active contract, not underlying asset price. Chart histories reset on contract changes or session restart.")
+    st.caption("Recent-market arrows show official Kalshi settlement results: YES ↑ / NO ↓. These do not necessarily indicate underlying asset direction.")
+    st.caption(f"Direction flip threshold: 0.5¢ each way · Sudden move: {sudden_cents}¢ per sample. Alerts are price observations, not trading recommendations.")
+st.caption(f"Last refresh: {datetime.now(CENTRAL):%b %d, %Y · %I:%M:%S %p %Z} · Quotes polled every {refresh_seconds}s.")
 st_autorefresh(interval=refresh_seconds * 1000, key="kalshi_grid_refresh")
