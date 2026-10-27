@@ -619,10 +619,23 @@ with bottom_right:
     statuses.append(("Silver", render_card("Silver", "KXSILVER15M", "🥈")))
 
 st.subheader("💰 Hypothetical Entry Profit Tracker")
-st.caption("Bitcoin + WTI Oil · one simulated contract per WATCH contract · recorded ask, not a confirmed fill. Fees are an adjustable estimate, not an exact Kalshi fee calculation.")
-fee_cents = st.number_input("Assumed total fees per contract (¢)", min_value=0.0, max_value=25.0, value=2.0, step=0.5, key="paper_fee_cents")
-fee = fee_cents / 100
+st.caption("Bitcoin + WTI Oil · $5 simulated budget per WATCH signal · whole contracts only · observed ask, not a confirmed fill.")
+entry_budget = st.number_input("Simulated budget per WATCH signal ($)", min_value=1.0, max_value=1000.0, value=5.0, step=1.0, key="paper_entry_budget")
+fee_cents = st.number_input("Estimated total fees per contract (¢)", min_value=0.0, max_value=25.0, value=2.0, step=0.5, key="paper_fee_cents")
+fee = fee_cents / 100.0
 paper_rows = st.session_state.get("paper_rows", [])
+
+def paper_position(row):
+    # Whole contracts; fees are included in the selected per-signal budget.
+    ask = float(row["entry_price"])
+    if not (0 < ask <= 1):
+        return 0, 0.0, None
+    contracts = int(round(entry_budget * 10000) // round((ask + fee) * 10000)) if ask + fee > 0 else 0
+    cost = contracts * (ask + fee)
+    per_contract_pnl = paper_pnl(row, fee)
+    net = contracts * per_contract_pnl if per_contract_pnl is not None else None
+    return contracts, cost, net
+
 if st.session_state.get("paper_error"):
     st.warning("Paper tracker database needs setup or is temporarily unavailable: " + st.session_state.paper_error)
 elif not st.session_state.get("paper_store"):
@@ -630,8 +643,8 @@ elif not st.session_state.get("paper_store"):
 else:
     graded_paper = [r for r in paper_rows if r.get("status") in ("win", "loss")]
     pending_paper = sum(r.get("status") == "pending" for r in paper_rows)
-    total_cost = sum(float(r["entry_price"]) + fee for r in graded_paper)
-    total_pnl = sum(paper_pnl(r, fee) for r in graded_paper)
+    total_cost = sum(paper_position(r)[1] for r in graded_paper)
+    total_pnl = sum(paper_position(r)[2] or 0 for r in graded_paper)
     cols = st.columns(4)
     cols[0].metric("Hypothetical net P&L", f"${total_pnl:+.2f}")
     cols[1].metric("Return on cost", f"{total_pnl / total_cost:+.1%}" if total_cost else "—")
@@ -639,18 +652,24 @@ else:
     cols[3].metric("Paper win rate", f"{sum(r['status']=='win' for r in graded_paper)/len(graded_paper):.1%}" if graded_paper else "—")
     for market in ("Bitcoin", "WTI Oil"):
         market_rows = [r for r in graded_paper if r.get("market_name") == market]
-        st.caption(f"{market}: {len(market_rows)} settled · estimated net P&L ${sum(paper_pnl(r, fee) for r in market_rows):+.2f}")
+        st.caption(f"{market}: {len(market_rows)} settled · estimated net P&L ${sum(paper_position(r)[2] or 0 for r in market_rows):+.2f}")
     with st.expander(f"📒 View hypothetical entries ({len(paper_rows)})"):
         if paper_rows:
-            st.dataframe([{"Market":r.get("market_name"), "Side":r.get("side"),
-                           "Entry ask (¢)":round(float(r["entry_price"])*100,1),
-                           "Observed at":r.get("observed_at"), "Contract":r.get("ticker"),
-                           "Status":r.get("status"),
-                           "Est. net P&L ($)":round(paper_pnl(r,fee),2) if paper_pnl(r,fee) is not None else None}
-                          for r in paper_rows], hide_index=True, use_container_width=True)
+            st.dataframe([{
+                "Market": r.get("market_name"),
+                "Side": r.get("side"),
+                "Entry ask (¢)": round(float(r["entry_price"]) * 100, 1),
+                "Contracts": paper_position(r)[0],
+                "Simulated cost incl. fees ($)": round(paper_position(r)[1], 2),
+                "Unused budget ($)": round(entry_budget - paper_position(r)[1], 2),
+                "Observed at": r.get("observed_at"),
+                "Contract": r.get("ticker"),
+                "Status": r.get("status"),
+                "Est. net P&L ($)": round(paper_position(r)[2], 2) if paper_position(r)[2] is not None else None,
+            } for r in paper_rows], hide_index=True, use_container_width=True)
         else:
             st.caption("No WATCH entries saved yet. Keep preview running to collect signals.")
-    st.caption("Simulation assumes one fill at first observed ask per contract and a $1 settlement payout on wins. Real fills, slippage, and fees may differ. Recording requires Streamlit to be running; no automatic trades.")
+    st.caption("The $5 budget includes estimated fees and buys only whole contracts; unused money is not invested. Changing the budget or fee setting recalculates all historical paper results—it does not change stored signals. Simulated fills at observed asks are not guaranteed. No real orders are placed.")
 
 st.subheader("🔒 Locked Call Scoreboard")
 if not call_store:
