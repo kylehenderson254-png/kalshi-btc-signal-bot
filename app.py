@@ -1,4 +1,3 @@
-
 """QUEEN'S EDGE | 254
 Fast public-API dashboard for queens-edge-preview.
 
@@ -26,6 +25,7 @@ from call_tracker import (
     process_early,
 )
 from pressure_radar import show_pressure_radar
+from dual_strong_lock import from_secrets as dual_store_from_secrets, analyze as dual_analyze
 from paper_tracker import (
     from_secrets as paper_store_from_secrets,
     grade_pending as paper_grade_pending,
@@ -151,6 +151,8 @@ st.session_state.setdefault("radar_events", [])
 st.session_state.setdefault("last_good_markets", {})
 st.session_state.setdefault("last_good_times", {})
 st.session_state.setdefault("strong_attempts", {})
+st.session_state.setdefault("dual_attempts", {})
+st.session_state.setdefault("dual_save_status", {})
 
 
 # ==========================================
@@ -593,6 +595,7 @@ paper_store = safe_store(
 strong_store = safe_store(
     strong_store_from_secrets
 )
+dual_store = safe_store(dual_store_from_secrets)
 
 
 # ==========================================
@@ -631,6 +634,7 @@ locked_rows = safe_rows(call_store)
 early_rows = safe_rows(early_store)
 paper_rows = safe_rows(paper_store)
 strong_rows = safe_rows(strong_store)
+dual_rows = safe_rows(dual_store)
 
 locked_map = {
     row["ticker"]: row
@@ -678,6 +682,13 @@ if strong_store:
             f"Strong grading: {exc}"
         )
 
+
+if dual_store:
+    try:
+        dual_store.grade(dual_rows)
+        dual_rows = safe_rows(dual_store)
+    except Exception as exc:
+        st.sidebar.warning(f"Dual Strong LOCK grading: {exc}")
 
 # ==========================================
 # HEADER
@@ -1027,6 +1038,53 @@ def market_card(
             locked,
             verified,
         )
+
+        # Independent dual paper signals; original locked/early trackers unchanged.
+        st.markdown("**🔐 Dual Strong LOCK**")
+        if close is None:
+            st.caption("Waiting for contract close time")
+        else:
+            seconds_left = (close - datetime.now(timezone.utc)).total_seconds()
+            history = st.session_state["quote_history"].get(ticker, [])
+            analysis = dual_analyze(market, history, seconds_left, verified)
+            stages = (("EARLY_10M", 540, 660), ("FINAL_5M", 240, 360))
+            for stage, lower, upper in stages:
+                stage_label = "🌅 10m early" if stage == "EARLY_10M" else "🔒 5m confirmation"
+                existing = next((r for r in dual_rows if r.get("ticker") == ticker and r.get("stage") == stage), None)
+                if existing:
+                    st.caption(f"{stage_label}: SAVED {existing.get('side')} · {existing.get('status')}")
+                    continue
+                if not (lower <= seconds_left <= upper):
+                    st.caption(f"{stage_label}: Awaiting window" if seconds_left > upper else f"{stage_label}: Window passed")
+                    continue
+                if analysis.get("decision") != "ENTER":
+                    st.caption(f"{stage_label}: WAIT · {analysis.get('reason')}")
+                    continue
+                st.caption(f"{stage_label}: ENTER candidate · {analysis.get('reason')}")
+                if dual_store is None:
+                    st.error("Dual Strong LOCK storage not configured")
+                    continue
+                key = (ticker, stage)
+                last = st.session_state["dual_attempts"].get(key, 0)
+                if time.time() - last >= 20:
+                    st.session_state["dual_attempts"][key] = time.time()
+                    try:
+                        payload = {
+                            "ticker": ticker, "stage": stage,
+                            "market_name": name, "series_ticker": series,
+                            "side": analysis["side"], "entry_price": analysis["entry_price"],
+                            "yes_midpoint": analysis["yes_midpoint"],
+                            "momentum_cents": analysis["momentum_cents"],
+                            "spread_cents": analysis["spread_cents"],
+                            "flow_score": analysis["flow_score"],
+                            "close_time": market.get("close_time"),
+                            "observed_at": datetime.now(timezone.utc).isoformat(),
+                            "status": "pending",
+                        }
+                        st.session_state["dual_save_status"][key] = dual_store.record_once(payload)
+                    except Exception as exc:
+                        st.session_state["dual_save_status"][key] = f"SAVE ERROR: {exc}"
+                st.caption(f"{stage_label}: {st.session_state['dual_save_status'].get(key, 'Saving…')}")
 
         with st.expander(
             "📋 Contract details"
@@ -1518,6 +1576,28 @@ st.caption(
     "and paper-only."
 )
 
+st.subheader("🔐 Dual Strong LOCK — Early vs Final")
+st.caption("Paper-only. Signals require observed quote momentum and valid bid/ask. Trade-flow confirmation is unavailable until a verified feed is connected; quote movements are not labeled whale trades.")
+for stage, label in (("EARLY_10M", "🌅 Early ~10m"), ("FINAL_5M", "🔒 Final ~5m")):
+    subset = [r for r in dual_rows if r.get("stage") == stage]
+    w = sum(str(r.get("status")).lower() == "win" for r in subset)
+    l = sum(str(r.get("status")).lower() == "loss" for r in subset)
+    pending = sum(str(r.get("status")).lower() == "pending" for r in subset)
+    pnl = sum((1 if str(r.get("status")).lower() == "win" else 0) - float(r["entry_price"]) - 0.02
+              for r in subset if str(r.get("status")).lower() in ("win", "loss") and number(r.get("entry_price")) is not None)
+    st.markdown(f"**{label}**")
+    x, y, z, v = st.columns(4)
+    x.metric("Wins / Losses", f"{w} / {l}")
+    y.metric("Win rate", f"{w/(w+l):.1%}" if w+l else "—")
+    z.metric("Pending", pending)
+    v.metric("Est. paper P&L", f"${pnl:+.2f}" if w+l else "—")
+with st.expander("📜 Dual Strong LOCK entries"):
+    if dual_rows:
+        st.dataframe(dual_rows, hide_index=True, width="stretch")
+    else:
+        st.caption("No dual signals recorded yet.")
+
+
 
 # ==========================================
 # RECENT MARKET RESULTS
@@ -1623,4 +1703,4 @@ st_autorefresh(
         * 1000
     ),
     key="queens_edge_tracker_refresh",
-)
+)       
