@@ -1,13 +1,15 @@
-"""QUEEN'S EDGE | 254 — BTC + WTI OIL COMMAND CENTER.
+"""QUEEN'S EDGE | 254
+BTC + WTI OIL Command Center
 
 Read-only Kalshi dashboard.
-All signals and performance records are paper-only.
+All calls, signals, and entries are paper-only.
 """
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from collections import Counter
 import base64
 import re
 import time
@@ -39,7 +41,7 @@ from strong_lock_tracker import (
 
 
 # ============================================================
-# SETTINGS
+# CONFIGURATION
 # ============================================================
 
 API = "https://api.elections.kalshi.com/trade-api/v2"
@@ -50,6 +52,11 @@ SERIES = [
     ("WTI Oil", "KXWTI15M", "🛢️"),
 ]
 
+STAGES = [
+    ("EARLY_10M", "10m Early", 540, 660),
+    ("FINAL_5M", "5m Final", 240, 360),
+]
+
 st.set_page_config(
     page_title="QUEEN'S EDGE | 254",
     page_icon="👑",
@@ -57,22 +64,31 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+
+# ============================================================
+# THEME / HORIZONTAL LAYOUT
+# ============================================================
+
 st.markdown(
     """
     <style>
     .stApp {
-        background: radial-gradient(
-            ellipse at top,
-            #1e103b 0%,
-            #090817 55%,
-            #05050c 100%
-        );
+        background:
+            radial-gradient(
+                ellipse at top,
+                #21113f 0%,
+                #0b091a 48%,
+                #05050c 100%
+            );
         color: #eee9ff;
     }
 
     .block-container {
-        max-width: 1500px;
-        padding-top: 1rem;
+        max-width: 1800px;
+        padding-top: 0.8rem;
+        padding-left: 1.5rem;
+        padding-right: 1.5rem;
+        padding-bottom: 2rem;
     }
 
     h1, h2, h3 {
@@ -81,30 +97,30 @@ st.markdown(
 
     [data-testid="stVerticalBlockBorderWrapper"] {
         border-color: #6540a3 !important;
-        border-radius: 16px !important;
+        border-radius: 15px !important;
     }
 
     .queen-title {
         text-align: center;
-        font-size: clamp(1.8rem, 4vw, 3rem);
+        font-size: clamp(1.7rem, 3vw, 2.7rem);
         font-weight: 900;
         color: #e0b9ff;
-        letter-spacing: .05em;
+        letter-spacing: 0.05em;
     }
 
     .queen-subtitle {
         text-align: center;
         color: #b8a2e7;
-        letter-spacing: .12em;
-        margin-bottom: 1.3rem;
+        letter-spacing: 0.10em;
+        margin-bottom: 0.5rem;
     }
 
     .quote-box {
         border-radius: 12px;
-        padding: 14px;
+        padding: 12px;
         border: 1px solid;
         text-align: center;
-        min-height: 110px;
+        min-height: 105px;
     }
 
     .above {
@@ -120,8 +136,43 @@ st.markdown(
     }
 
     .quote-price {
-        font-size: 1.25rem;
+        font-size: 1.2rem;
         font-weight: 800;
+    }
+
+    .section-label {
+        color: #c9a7ff;
+        font-size: 0.85rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+    }
+
+    div[data-testid="stMetric"] {
+        background: rgba(111, 67, 178, 0.10);
+        border: 1px solid rgba(166, 119, 230, 0.25);
+        border-radius: 12px;
+        padding: 12px;
+    }
+
+    div[data-testid="stMetricValue"] {
+        font-size: 1.45rem;
+    }
+
+    @media (max-width: 700px) {
+        .block-container {
+            padding-left: 0.65rem;
+            padding-right: 0.65rem;
+        }
+
+        .quote-box {
+            padding: 8px;
+            min-height: 95px;
+        }
+
+        .quote-price {
+            font-size: 1rem;
+        }
     }
     </style>
     """,
@@ -133,7 +184,7 @@ st.markdown(
 # SESSION STATE
 # ============================================================
 
-for key, default in {
+DEFAULT_STATE = {
     "quote_history": {},
     "radar_events": [],
     "last_good_markets": {},
@@ -142,12 +193,17 @@ for key, default in {
     "dual_attempts": {},
     "dual_save_status": {},
     "dual_last_reason": {},
-}.items():
+    "dual_monitor": {},
+    "dual_monitor_seen": {},
+    "dual_monitor_events": [],
+}
+
+for key, default in DEFAULT_STATE.items():
     st.session_state.setdefault(key, default)
 
 
 # ============================================================
-# HELPERS
+# GENERAL HELPERS
 # ============================================================
 
 def number(value):
@@ -183,14 +239,11 @@ def quote(market, side, kind):
     if dollars is not None:
         return dollars
 
-    cents_value = number(
+    value = number(
         market.get(f"{side}_{kind}")
     )
 
-    if cents_value is not None:
-        return cents_value / 100
-
-    return None
+    return value / 100 if value is not None else None
 
 
 def midpoint(market):
@@ -208,10 +261,11 @@ def midpoint(market):
 
 
 def cents(value):
-    if value is None:
-        return "—"
-
-    return f"{value * 100:.1f}¢"
+    return (
+        f"{value * 100:.1f}¢"
+        if value is not None
+        else "—"
+    )
 
 
 def target(market):
@@ -227,8 +281,7 @@ def target(market):
             return f"${value:,.3f}"
 
     return str(
-        market.get("yes_sub_title")
-        or "See rules"
+        market.get("yes_sub_title") or "See rules"
     )
 
 
@@ -255,8 +308,48 @@ def verified_direction(market):
     )
 
 
+def market_series(row):
+    series = str(
+        row.get("series_ticker") or ""
+    ).upper()
+
+    ticker = str(
+        row.get("ticker") or ""
+    ).upper()
+
+    name = str(
+        row.get("market_name")
+        or row.get("market")
+        or ""
+    ).lower()
+
+    if (
+        series == "KXBTC15M"
+        or ticker.startswith("KXBTC15M-")
+        or "bitcoin" in name
+    ):
+        return "KXBTC15M"
+
+    if (
+        series == "KXWTI15M"
+        or ticker.startswith("KXWTI15M-")
+        or "wti" in name
+        or "oil" in name
+    ):
+        return "KXWTI15M"
+
+    return None
+
+
+def btc_oil_rows(rows):
+    return [
+        row for row in rows
+        if market_series(row) is not None
+    ]
+
+
 # ============================================================
-# KALSHI MARKET DATA
+# KALSHI DATA
 # ============================================================
 
 @st.cache_data(ttl=1, show_spinner=False)
@@ -317,12 +410,8 @@ def current_market(markets):
     eligible = [
         market
         for market in markets
-        if parse_time(
-            market.get("close_time")
-        ) is None
-        or parse_time(
-            market.get("close_time")
-        ) > now
+        if parse_time(market.get("close_time")) is None
+        or parse_time(market.get("close_time")) > now
     ]
 
     if not eligible:
@@ -331,20 +420,14 @@ def current_market(markets):
     active = [
         market
         for market in eligible
-        if parse_time(
-            market.get("open_time")
-        ) is None
-        or parse_time(
-            market.get("open_time")
-        ) <= now
+        if parse_time(market.get("open_time")) is None
+        or parse_time(market.get("open_time")) <= now
     ]
 
     return min(
         active or eligible,
         key=lambda market: (
-            parse_time(
-                market.get("close_time")
-            )
+            parse_time(market.get("close_time"))
             or datetime.max.replace(
                 tzinfo=timezone.utc
             )
@@ -356,9 +439,7 @@ def fetch_series(series):
     try:
         return (
             series,
-            current_market(
-                fetch_markets(series)
-            ),
+            current_market(fetch_markets(series)),
             None,
         )
 
@@ -370,15 +451,9 @@ def active_markets():
     results = {}
     errors = {}
 
-    with ThreadPoolExecutor(
-        max_workers=2
-    ) as executor:
-
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
-            executor.submit(
-                fetch_series,
-                series,
-            )
+            executor.submit(fetch_series, series)
             for _, series, _ in SERIES
         ]
 
@@ -397,11 +472,9 @@ def active_markets():
                 ][series] = time.time()
 
             else:
-                results[series] = (
-                    st.session_state[
-                        "last_good_markets"
-                    ].get(series)
-                )
+                results[series] = st.session_state[
+                    "last_good_markets"
+                ].get(series)
 
                 if error:
                     errors[series] = error
@@ -434,45 +507,267 @@ def safe_rows(store):
         return []
 
 
-def market_series(row):
-    series = str(
-        row.get("series_ticker") or ""
-    ).upper()
+# ============================================================
+# DUAL SIGNAL MONITOR
+# ============================================================
 
-    ticker = str(
-        row.get("ticker") or ""
-    ).upper()
+def monitor_bucket(series, stage):
+    key = (series, stage)
 
-    name = str(
-        row.get("market_name")
-        or row.get("market")
-        or ""
-    ).lower()
+    monitor = st.session_state["dual_monitor"]
 
-    if (
-        series == "KXBTC15M"
-        or ticker.startswith("KXBTC15M-")
-        or "bitcoin" in name
+    if key not in monitor:
+        monitor[key] = {
+            "checks": 0,
+            "waits": 0,
+            "candidates": 0,
+            "saved": 0,
+            "save_errors": 0,
+            "near_misses": 0,
+            "reasons": {},
+            "last_reason": "Awaiting evaluation",
+            "last_check": None,
+        }
+
+    return monitor[key]
+
+
+def classify_reason(reason):
+    text = str(reason or "").lower()
+
+    if "unverified" in text:
+        return "Direction unverified"
+
+    if "history" in text or "sample" in text:
+        return "History warming up"
+
+    if "25" in text and (
+        "older" in text or "history" in text
     ):
-        return "KXBTC15M"
+        return "History warming up"
 
-    if (
-        series == "KXWTI15M"
-        or ticker.startswith("KXWTI15M-")
-        or "wti" in name
-        or "oil" in name
-    ):
-        return "KXWTI15M"
+    if "midpoint" in text and "aligned ticks" in text:
+        match = re.search(
+            r"Aligned ticks\s+(\d+)/3",
+            str(reason),
+            re.IGNORECASE,
+        )
 
-    return None
+        ticks = (
+            int(match.group(1))
+            if match
+            else 0
+        )
+
+        if "NONE |" in str(reason):
+            return "Midpoint outside entry zone"
+
+        if ticks < 3:
+            return "Momentum / aligned ticks"
+
+        return "Momentum threshold"
+
+    if "spread" in text:
+        return "Spread too wide"
+
+    if "ask" in text or "entry" in text:
+        return "Entry price too high"
+
+    if "pressure" in text or "opposes" in text:
+        return "Opposing pressure"
+
+    if "quote" in text:
+        return "Quote unavailable"
+
+    if "window" in text:
+        return "Outside entry window"
+
+    return "Other condition"
 
 
-def btc_oil_rows(rows):
-    return [
-        row
-        for row in rows
-        if market_series(row) is not None
+def is_near_miss(reason):
+    text = str(reason or "")
+
+    if "NONE |" in text:
+        return False
+
+    match = re.search(
+        r"Aligned ticks\s+(\d+)/3",
+        text,
+        re.IGNORECASE,
+    )
+
+    if not match:
+        return False
+
+    ticks = int(match.group(1))
+
+    move = re.search(
+        r"Move\s+([+-]?\d+(?:\.\d+)?)¢",
+        text,
+        re.IGNORECASE,
+    )
+
+    if not move:
+        return False
+
+    movement = float(move.group(1))
+
+    if "ABOVE |" in text:
+        move_ok = movement >= 1.2
+
+    elif "BELOW |" in text:
+        move_ok = movement <= -1.2
+
+    else:
+        return False
+
+    return move_ok and ticks == 2
+
+
+def monitor_event(
+    name,
+    series,
+    ticker,
+    stage,
+    decision,
+    reason,
+    save_status=None,
+):
+    """
+    Counts at most one evaluation per 5-second bucket
+    for each ticker and stage.
+
+    These are sampled diagnostic observations, not
+    independent trades or historical backtest results.
+    """
+
+    now = datetime.now(timezone.utc)
+
+    sample_key = (
+        ticker,
+        stage,
+        int(now.timestamp() // 5),
+    )
+
+    seen = st.session_state[
+        "dual_monitor_seen"
     ]
+
+    if sample_key in seen:
+        return
+
+    seen[sample_key] = True
+
+    if len(seen) > 3000:
+        seen.clear()
+        seen[sample_key] = True
+
+    bucket = monitor_bucket(
+        series,
+        stage,
+    )
+
+    bucket["checks"] += 1
+    bucket["last_check"] = now
+    bucket["last_reason"] = str(reason)
+
+    category = classify_reason(reason)
+
+    if decision == "ENTER":
+        bucket["candidates"] += 1
+
+    else:
+        bucket["waits"] += 1
+
+        reasons = bucket["reasons"]
+
+        reasons[category] = (
+            reasons.get(category, 0) + 1
+        )
+
+        if is_near_miss(reason):
+            bucket["near_misses"] += 1
+
+    event = {
+        "Time": now.astimezone(
+            CENTRAL
+        ).strftime("%I:%M:%S %p"),
+        "Market": name,
+        "Stage": (
+            "10m" if stage == "EARLY_10M"
+            else "5m"
+        ),
+        "Decision": decision,
+        "Reason": str(reason),
+    }
+
+    events = st.session_state[
+        "dual_monitor_events"
+    ]
+
+    events.insert(0, event)
+
+    del events[100:]
+
+
+def monitor_save_result(
+    series,
+    stage,
+    status,
+):
+    bucket = monitor_bucket(
+        series,
+        stage,
+    )
+
+    text = str(status or "").lower()
+
+    if (
+        "save error" in text
+        or "failed" in text
+        or "error" in text
+    ):
+        bucket["save_errors"] += 1
+
+    elif (
+        "saved" in text
+        or "created" in text
+        or "inserted" in text
+    ):
+        bucket["saved"] += 1
+
+
+def monitor_summary(series, stage):
+    bucket = monitor_bucket(
+        series,
+        stage,
+    )
+
+    reasons = bucket["reasons"]
+
+    if reasons:
+        top_reason = max(
+            reasons,
+            key=reasons.get,
+        )
+    else:
+        top_reason = "—"
+
+    return {
+        "Window": (
+            "10m Early"
+            if stage == "EARLY_10M"
+            else "5m Final"
+        ),
+        "Checks": bucket["checks"],
+        "WAIT": bucket["waits"],
+        "Near misses": bucket["near_misses"],
+        "ENTER": bucket["candidates"],
+        "Saved*": bucket["saved"],
+        "Save errors": bucket["save_errors"],
+        "Top blocker": top_reason,
+    }
 
 
 # ============================================================
@@ -498,17 +793,15 @@ with st.sidebar:
         value=4,
     )
 
-    if st.button(
-        "Clear local radar history"
-    ):
-        st.session_state[
-            "quote_history"
-        ] = {}
+    if st.button("Clear local radar history"):
+        st.session_state["quote_history"] = {}
+        st.session_state["radar_events"] = []
+        st.rerun()
 
-        st.session_state[
-            "radar_events"
-        ] = []
-
+    if st.button("Reset signal monitor"):
+        st.session_state["dual_monitor"] = {}
+        st.session_state["dual_monitor_seen"] = {}
+        st.session_state["dual_monitor_events"] = []
         st.rerun()
 
     st.caption(
@@ -517,7 +810,7 @@ with st.sidebar:
 
 
 # ============================================================
-# LOAD TRACKERS
+# LOAD EXISTING TRACKERS
 # ============================================================
 
 call_store = safe_store(
@@ -550,7 +843,6 @@ if call_store:
             call_store,
             current_by_series=tracker_markets,
         )
-
     except Exception as exc:
         st.sidebar.warning(
             f"Locked tracker: {exc}"
@@ -562,7 +854,6 @@ if early_store:
             early_store,
             current_by_series=tracker_markets,
         )
-
     except Exception as exc:
         st.sidebar.warning(
             f"Early tracker: {exc}"
@@ -591,7 +882,7 @@ dual_rows = btc_oil_rows(
 
 
 # ============================================================
-# GRADE PAPER ENTRIES
+# GRADE EXISTING PAPER HISTORY
 # ============================================================
 
 if paper_store:
@@ -600,11 +891,9 @@ if paper_store:
             paper_store,
             safe_rows(paper_store),
         )
-
         paper_rows = btc_oil_rows(
             safe_rows(paper_store)
         )
-
     except Exception as exc:
         st.sidebar.warning(
             f"WATCH grading: {exc}"
@@ -616,11 +905,9 @@ if strong_store:
             strong_store,
             safe_rows(strong_store),
         )
-
         strong_rows = btc_oil_rows(
             safe_rows(strong_store)
         )
-
     except Exception as exc:
         st.sidebar.warning(
             f"Strong LOCK grading: {exc}"
@@ -631,11 +918,9 @@ if dual_store:
         dual_store.grade(
             safe_rows(dual_store)
         )
-
         dual_rows = btc_oil_rows(
             safe_rows(dual_store)
         )
-
     except Exception as exc:
         st.sidebar.warning(
             f"Dual grading: {exc}"
@@ -670,7 +955,7 @@ if banner.exists():
 
     st.markdown(
         f'<img src="data:image/jpeg;base64,{encoded}" '
-        'style="width:100%;max-height:210px;'
+        'style="width:100%;max-height:180px;'
         'object-fit:cover;border-radius:15px;">',
         unsafe_allow_html=True,
     )
@@ -699,7 +984,7 @@ st.caption(
 
 
 # ============================================================
-# LIVE HISTORY AND FLIP RADAR
+# LIVE QUOTE HISTORY / FLIP RADAR
 # ============================================================
 
 def update_history(ticker, name, mid):
@@ -721,7 +1006,6 @@ def update_history(ticker, name, mid):
         history.append(
             (now, mid, "YES midpoint")
         )
-
         del history[:-120]
 
     if len(history) < 3:
@@ -759,23 +1043,18 @@ def update_history(ticker, name, mid):
         "radar_events"
     ]
 
-    if (
-        not events
-        or events[0]["ticker"] != ticker
-        or events[0]["time"] != now
-    ):
-        events.insert(
-            0,
-            {
-                "ticker": ticker,
-                "market": name,
-                "label": label,
-                "time": now,
-                "move": latest * 100,
-            },
-        )
+    events.insert(
+        0,
+        {
+            "ticker": ticker,
+            "market": name,
+            "label": label,
+            "time": now,
+            "move": latest * 100,
+        },
+    )
 
-        del events[50:]
+    del events[50:]
 
     return label
 
@@ -844,13 +1123,10 @@ def strong_lock_panel(
                                 locked.get(
                                     "yes_midpoint"
                                 )
-                            )
-                            or 0
+                            ) or 0
                         ),
-                        "close_time": (
-                            market.get(
-                                "close_time"
-                            )
+                        "close_time": market.get(
+                            "close_time"
                         ),
                         "status": "pending",
                         "observed_at": (
@@ -868,7 +1144,7 @@ def strong_lock_panel(
 
 
 # ============================================================
-# DUAL STRONG LOCK
+# DUAL STRONG LOCK + SIGNAL MONITOR
 # ============================================================
 
 def dual_panel(
@@ -904,34 +1180,15 @@ def dual_panel(
         verified,
     )
 
-    stages = (
-        (
-            "EARLY_10M",
-            "🌅 10m Early",
-            540,
-            660,
-        ),
-        (
-            "FINAL_5M",
-            "🔒 5m Final",
-            240,
-            360,
-        ),
-    )
-
-    for stage, label, lower, upper in stages:
+    for stage, label, lower, upper in STAGES:
         key = (ticker, stage)
 
         existing = next(
             (
                 row
                 for row in dual_rows
-                if (
-                    row.get("ticker")
-                    == ticker
-                    and row.get("stage")
-                    == stage
-                )
+                if row.get("ticker") == ticker
+                and row.get("stage") == stage
             ),
             None,
         )
@@ -951,33 +1208,42 @@ def dual_panel(
             continue
 
         if seconds_left < lower:
-            last_reason = (
-                st.session_state[
-                    "dual_last_reason"
-                ].get(key)
-            )
+            last_reason = st.session_state[
+                "dual_last_reason"
+            ].get(key)
 
             if last_reason:
                 st.caption(
                     f"{label}: SKIPPED "
-                    f"· Last check: "
-                    f"{last_reason}"
+                    f"· Last check: {last_reason}"
                 )
-
             else:
                 st.caption(
                     f"{label}: Window passed "
                     f"· No saved entry"
                 )
-
             continue
 
-        if analysis.get("decision") != "ENTER":
-            reason = str(
-                analysis.get("reason")
-                or "Conditions not met"
-            )
+        decision = analysis.get(
+            "decision",
+            "WAIT",
+        )
 
+        reason = str(
+            analysis.get("reason")
+            or "Conditions not met"
+        )
+
+        monitor_event(
+            name,
+            series,
+            ticker,
+            stage,
+            decision,
+            reason,
+        )
+
+        if decision != "ENTER":
             st.session_state[
                 "dual_last_reason"
             ][key] = reason
@@ -985,18 +1251,21 @@ def dual_panel(
             st.caption(
                 f"{label}: WAIT · {reason}"
             )
-
             continue
 
         st.caption(
-            f"{label}: ENTER candidate · "
-            f"{analysis.get('reason')}"
+            f"{label}: ENTER candidate · {reason}"
         )
 
         if dual_store is None:
             st.error(
                 "Dual Strong LOCK storage unavailable"
             )
+
+            st.session_state[
+                "dual_save_status"
+            ][key] = "SAVE ERROR: Storage unavailable"
+
             continue
 
         attempts = st.session_state[
@@ -1017,16 +1286,14 @@ def dual_panel(
                     "market_name": name,
                     "series_ticker": series,
                     "side": analysis["side"],
-                    "entry_price": (
-                        analysis["entry_price"]
-                    ),
-                    "yes_midpoint": (
-                        analysis["yes_midpoint"]
-                    ),
-                    "close_time": (
-                        market.get(
-                            "close_time"
-                        )
+                    "entry_price": analysis[
+                        "entry_price"
+                    ],
+                    "yes_midpoint": analysis[
+                        "yes_midpoint"
+                    ],
+                    "close_time": market.get(
+                        "close_time"
                     ),
                     "observed_at": (
                         datetime.now(
@@ -1036,31 +1303,72 @@ def dual_panel(
                     "status": "pending",
                 }
 
-                result = (
-                    dual_store.record_once(
-                        payload
-                    )
+                result = dual_store.record_once(
+                    payload
                 )
 
                 st.session_state[
                     "dual_save_status"
                 ][key] = result
 
+                # Verify whether the record is readable
+                # before counting it as a saved entry.
+                try:
+                    updated_rows = dual_store.all()
+
+                    confirmed = any(
+                        row.get("ticker") == ticker
+                        and row.get("stage") == stage
+                        for row in updated_rows
+                    )
+
+                    if confirmed:
+                        monitor_bucket(
+                            series,
+                            stage,
+                        )["saved"] += 1
+
+                        st.session_state[
+                            "dual_save_status"
+                        ][key] = "SAVED — verified in Supabase"
+
+                    else:
+                        st.session_state[
+                            "dual_save_status"
+                        ][key] = (
+                            "Save attempted; "
+                            "record not yet verified"
+                        )
+
+                except Exception as verify_exc:
+                    st.session_state[
+                        "dual_save_status"
+                    ][key] = (
+                        "Save attempted; "
+                        f"verification unavailable: {verify_exc}"
+                    )
+
             except Exception as exc:
                 st.session_state[
                     "dual_save_status"
-                ][key] = (
-                    f"SAVE ERROR: {exc}"
-                )
+                ][key] = f"SAVE ERROR: {exc}"
+
+                monitor_bucket(
+                    series,
+                    stage,
+                )["save_errors"] += 1
+
+        status = st.session_state[
+            "dual_save_status"
+        ].get(key, "Checking…")
 
         st.caption(
-            f"{label}: "
-            f"{st.session_state['dual_save_status'].get(key, 'Checking…')}"
+            f"{label}: {status}"
         )
 
 
 # ============================================================
-# MARKET CARDS
+# MARKET CARD
 # ============================================================
 
 def market_card(
@@ -1118,15 +1426,13 @@ def market_card(
             )
 
             countdown = (
-                f"{minutes:02d}:"
-                f"{seconds:02d}"
+                f"{minutes:02d}:{seconds:02d}"
             )
-
         else:
             countdown = "—"
 
-        top_left, top_right = (
-            st.columns([1.5, 1])
+        top_left, top_right = st.columns(
+            [1.5, 1]
         )
 
         with top_left:
@@ -1144,7 +1450,6 @@ def market_card(
                 "Latest quote request failed; "
                 "showing cached data"
             )
-
         else:
             stamp = st.session_state[
                 "last_good_times"
@@ -1195,14 +1500,10 @@ def market_card(
             st.markdown(
                 '<div class="quote-box above">'
                 f"<b>{above_label}</b>"
-                '<p>BID '
-                '<span class="quote-price">'
-                f"{cents(yes_bid)}"
-                "</span></p>"
-                '<p>ASK '
-                '<span class="quote-price">'
-                f"{cents(yes_ask)}"
-                "</span></p>"
+                '<p>BID <span class="quote-price">'
+                f"{cents(yes_bid)}</span></p>"
+                '<p>ASK <span class="quote-price">'
+                f"{cents(yes_ask)}</span></p>"
                 "</div>",
                 unsafe_allow_html=True,
             )
@@ -1217,14 +1518,10 @@ def market_card(
             st.markdown(
                 '<div class="quote-box below">'
                 f"<b>{below_label}</b>"
-                '<p>BID '
-                '<span class="quote-price">'
-                f"{cents(no_bid)}"
-                "</span></p>"
-                '<p>ASK '
-                '<span class="quote-price">'
-                f"{cents(no_ask)}"
-                "</span></p>"
+                '<p>BID <span class="quote-price">'
+                f"{cents(no_bid)}</span></p>"
+                '<p>ASK <span class="quote-price">'
+                f"{cents(no_ask)}</span></p>"
                 "</div>",
                 unsafe_allow_html=True,
             )
@@ -1276,7 +1573,6 @@ def market_card(
                     },
                     height=160,
                 )
-
             else:
                 st.caption(
                     "Collecting live quote history"
@@ -1293,9 +1589,7 @@ def market_card(
             )
 
             st.write(
-                str(
-                    early.get("call")
-                )
+                str(early.get("call"))
                 if early
                 else "Awaiting signal"
             )
@@ -1305,16 +1599,14 @@ def market_card(
                 "**🔒 Locked Call**"
             )
 
-            if locked:
-                st.write(
+            st.write(
+                (
                     f"{locked.get('call')} "
                     f"· {locked.get('status')}"
                 )
-
-            else:
-                st.write(
-                    "Awaiting lock"
-                )
+                if locked
+                else "Awaiting lock"
+            )
 
         strong_lock_panel(
             name,
@@ -1347,7 +1639,6 @@ def market_card(
                     name,
                     ticker,
                 )
-
             except Exception as exc:
                 st.caption(
                     f"Pressure unavailable: {exc}"
@@ -1365,16 +1656,14 @@ def market_card(
                 or "See Kalshi rules"
             )
 
-            if market.get(
-                "rules_secondary"
-            ):
+            if market.get("rules_secondary"):
                 st.write(
                     market["rules_secondary"]
                 )
 
 
 # ============================================================
-# LIVE MARKET GRID
+# HORIZONTAL LIVE MARKET GRID
 # ============================================================
 
 @st.fragment(run_every="1s")
@@ -1409,84 +1698,7 @@ live_grid()
 
 
 # ============================================================
-# PERFORMANCE CENTER
-# ============================================================
-
-st.divider()
-
-st.subheader(
-    "📊 BTC + OIL PERFORMANCE CENTER"
-)
-
-
-# ============================================================
-# NEW: DUAL STRONG LOCK DATABASE DIAGNOSTICS
-# ============================================================
-
-with st.expander(
-    "🧪 Dual Strong LOCK database diagnostics",
-    expanded=True,
-):
-    st.caption(
-        "Read-only database test. "
-        "No paper entries are created or modified."
-    )
-
-    if dual_store is None:
-        st.error(
-            "Dual Strong LOCK storage is unavailable. "
-            "Check the Supabase secrets configured "
-            "for the preview Streamlit app."
-        )
-
-    else:
-        try:
-            response = dual_store.request(
-                "GET",
-                {
-                    "select": "ticker,stage,status",
-                    "limit": 1,
-                },
-            )
-
-            st.success(
-                "DATABASE READ OK — "
-                "Dual Strong LOCK table is accessible."
-            )
-
-            st.caption(
-                "Database sample rows returned: "
-                f"{len(response)} (maximum 1)."
-            )
-
-            st.caption(
-                "BTC + Oil Dual entries loaded: "
-                f"{len(dual_rows)}"
-            )
-
-            st.info(
-                "The database connection can READ "
-                "Dual Strong LOCK records. "
-                "This does not yet verify INSERT "
-                "permissions or guarantee that a "
-                "qualifying entry will save."
-            )
-
-        except Exception as exc:
-            st.error(
-                "DATABASE READ FAILED — "
-                f"{exc}"
-            )
-
-            st.warning(
-                "The Dual Strong LOCK database "
-                "connection needs attention before "
-                "we can rely on saved entries."
-            )
-
-
-# ============================================================
-# PERFORMANCE CALCULATIONS
+# PERFORMANCE HELPERS
 # ============================================================
 
 def counts(rows):
@@ -1523,36 +1735,34 @@ def paper_pnl(row):
         row.get("entry_price")
     )
 
-    if status not in (
-        "win",
-        "loss",
-    ):
+    if status not in ("win", "loss"):
         return None
 
-    if (
-        price is None
-        or not 0 <= price <= 1
-    ):
+    if price is None or not 0 <= price <= 1:
         return None
 
-    payout = (
-        1
-        if status == "win"
-        else 0
-    )
+    payout = 1 if status == "win" else 0
 
     return payout - price - 0.02
 
 
+# ============================================================
+# PERFORMANCE CENTER
+# ============================================================
+
+st.divider()
+
+st.subheader(
+    "📊 BTC + OIL PERFORMANCE CENTER"
+)
+
 dual_early_rows = [
-    row
-    for row in dual_rows
+    row for row in dual_rows
     if row.get("stage") == "EARLY_10M"
 ]
 
 dual_final_rows = [
-    row
-    for row in dual_rows
+    row for row in dual_rows
     if row.get("stage") == "FINAL_5M"
 ]
 
@@ -1565,12 +1775,245 @@ performance_groups = [
     ("👑 Dual 5m", dual_final_rows),
 ]
 
+
+# ============================================================
+# HORIZONTAL PERFORMANCE METRICS
+# ============================================================
+
+all_rows = (
+    locked_rows
+    + early_rows
+    + paper_rows
+    + strong_rows
+    + dual_rows
+)
+
+total_wins, total_losses, total_pending = (
+    counts(all_rows)
+)
+
+total_settled = total_wins + total_losses
+
+overall_rate = (
+    f"{total_wins / total_settled:.1%}"
+    if total_settled
+    else "—"
+)
+
+metric_cols = st.columns(4)
+
+with metric_cols[0]:
+    st.metric(
+        "🏆 Wins",
+        total_wins,
+    )
+
+with metric_cols[1]:
+    st.metric(
+        "❌ Losses",
+        total_losses,
+    )
+
+with metric_cols[2]:
+    st.metric(
+        "📈 Win Rate",
+        overall_rate,
+    )
+
+with metric_cols[3]:
+    st.metric(
+        "⏳ Pending",
+        total_pending,
+    )
+
+st.caption(
+    "Combined paper records across all tracker types. "
+    "The same market may appear in multiple strategies, "
+    "so these totals are not independent trades."
+)
+
+
+# ============================================================
+# DUAL STRONG LOCK SIGNAL MONITOR
+# ============================================================
+
+st.markdown(
+    "### 🔎 DUAL STRONG LOCK SIGNAL MONITOR"
+)
+
+st.caption(
+    "Sampled evaluations during the 10-minute and "
+    "5-minute entry windows. Counts are diagnostic "
+    "observations, not trades. Monitoring requires "
+    "the dashboard session to remain active."
+)
+
+btc_col, oil_col = st.columns(
+    2,
+    gap="medium",
+)
+
+with btc_col:
+    with st.container(border=True):
+        st.markdown(
+            "#### ₿ BITCOIN"
+        )
+
+        btc_monitor_rows = [
+            monitor_summary(
+                "KXBTC15M",
+                stage,
+            )
+            for stage, _, _, _ in STAGES
+        ]
+
+        st.dataframe(
+            btc_monitor_rows,
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        for stage, label, _, _ in STAGES:
+            bucket = monitor_bucket(
+                "KXBTC15M",
+                stage,
+            )
+
+            st.caption(
+                f"{label} · Last: "
+                f"{bucket['last_reason']}"
+            )
+
+with oil_col:
+    with st.container(border=True):
+        st.markdown(
+            "#### 🛢️ WTI OIL"
+        )
+
+        oil_monitor_rows = [
+            monitor_summary(
+                "KXWTI15M",
+                stage,
+            )
+            for stage, _, _, _ in STAGES
+        ]
+
+        st.dataframe(
+            oil_monitor_rows,
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        for stage, label, _, _ in STAGES:
+            bucket = monitor_bucket(
+                "KXWTI15M",
+                stage,
+            )
+
+            st.caption(
+                f"{label} · Last: "
+                f"{bucket['last_reason']}"
+            )
+
+with st.expander(
+    "📋 Signal monitor details",
+    expanded=False,
+):
+    st.caption(
+        "A near miss means the midpoint and "
+        "25-second movement qualified, but "
+        "only 2 of the 3 required aligned ticks "
+        "were observed. This is a diagnostic "
+        "definition, not a trade recommendation."
+    )
+
+    events = st.session_state[
+        "dual_monitor_events"
+    ]
+
+    if events:
+        st.dataframe(
+            events[:50],
+            hide_index=True,
+            use_container_width=True,
+        )
+    else:
+        st.info(
+            "No monitored entry-window evaluations yet. "
+            "Keep the dashboard open through the "
+            "10-minute or 5-minute window."
+        )
+
+
+# ============================================================
+# DATABASE DIAGNOSTICS
+# ============================================================
+
+with st.expander(
+    "🧪 Dual Strong LOCK database diagnostics",
+    expanded=False,
+):
+    st.caption(
+        "Read-only database connection test. "
+        "No test entries are created."
+    )
+
+    if dual_store is None:
+        st.error(
+            "DATABASE UNAVAILABLE — "
+            "Check the Supabase configuration "
+            "for this Streamlit preview app."
+        )
+
+    else:
+        try:
+            response = dual_store.request(
+                "GET",
+                {
+                    "select": "ticker,stage,status",
+                    "limit": 1,
+                },
+            )
+
+            st.success(
+                "DATABASE READ OK — "
+                "Dual Strong LOCK table is accessible."
+            )
+
+            st.caption(
+                "Sample rows returned: "
+                f"{len(response)} (maximum 1)"
+            )
+
+            st.caption(
+                "BTC + Oil Dual entries loaded: "
+                f"{len(dual_rows)}"
+            )
+
+            st.info(
+                "Reading the table works. "
+                "An actual qualifying ENTER signal "
+                "is still needed to test saving."
+            )
+
+        except Exception as exc:
+            st.error(
+                f"DATABASE READ FAILED — {exc}"
+            )
+
+
+# ============================================================
+# TRACKER PERFORMANCE TABLE
+# ============================================================
+
+st.markdown(
+    "### 📈 STRATEGY PERFORMANCE"
+)
+
 summary = []
 
 for label, rows in performance_groups:
-    wins, losses, pending = counts(
-        rows
-    )
+    wins, losses, pending = counts(rows)
 
     pnl = [
         value
@@ -1580,28 +2023,22 @@ for label, rows in performance_groups:
         ) is not None
     ]
 
-    if wins + losses:
-        win_rate = (
-            f"{wins / (wins + losses):.1%}"
-        )
-    else:
-        win_rate = "—"
-
-    if pnl:
-        pnl_text = (
-            f"${sum(pnl):+.2f}"
-        )
-    else:
-        pnl_text = "—"
-
     summary.append(
         {
             "Tracker": label,
             "Wins": wins,
             "Losses": losses,
-            "Win rate": win_rate,
+            "Win rate": (
+                f"{wins / (wins + losses):.1%}"
+                if wins + losses
+                else "—"
+            ),
             "Pending": pending,
-            "Paper P&L*": pnl_text,
+            "Paper P&L*": (
+                f"${sum(pnl):+.2f}"
+                if pnl
+                else "—"
+            ),
         }
     )
 
@@ -1612,9 +2049,9 @@ st.dataframe(
 )
 
 st.caption(
-    "*Illustrative one-contract P&L "
-    "assumes 2¢ fees and available "
-    "entry prices. Not actual trading profit."
+    "*Illustrative one-contract P&L assumes "
+    "2¢ fees and available entry prices. "
+    "Not actual trading profit."
 )
 
 
@@ -1639,20 +2076,17 @@ with st.expander(
                 subset
             )
 
-            if wins + losses:
-                win_rate = (
-                    f"{wins / (wins + losses):.1%}"
-                )
-            else:
-                win_rate = "—"
-
             values.append(
                 {
                     "Tracker": label,
                     "Market": f"{emoji} {name}",
                     "Wins": wins,
                     "Losses": losses,
-                    "Win rate": win_rate,
+                    "Win rate": (
+                        f"{wins / (wins + losses):.1%}"
+                        if wins + losses
+                        else "—"
+                    ),
                     "Pending": pending,
                 }
             )
@@ -1697,7 +2131,7 @@ with st.expander(
 
 
 # ============================================================
-# SETTLEMENT HISTORY
+# BOTTOM INFORMATION ROW
 # ============================================================
 
 st.divider()
@@ -1714,9 +2148,7 @@ with left_info:
 
     for name, series, emoji in SERIES:
         try:
-            recent = fetch_recent(
-                series
-            )
+            recent = fetch_recent(series)
 
             arrows = [
                 (
@@ -1729,28 +2161,20 @@ with left_info:
                 for row in reversed(recent)
             ]
 
-            if arrows:
-                result_text = " ".join(
-                    arrows
-                )
-            else:
-                result_text = "No results"
-
             st.caption(
                 f"{emoji} {name}: "
-                f"{result_text}"
+                + (
+                    " ".join(arrows)
+                    if arrows
+                    else "No results"
+                )
             )
 
         except Exception:
             st.caption(
-                f"{emoji} {name}: "
-                "Results unavailable"
+                f"{emoji} {name}: Results unavailable"
             )
 
-
-# ============================================================
-# FLIP RADAR ALERT HISTORY
-# ============================================================
 
 with right_info:
     st.markdown(
