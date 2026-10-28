@@ -1,7 +1,8 @@
 
 """QUEEN'S EDGE | 254
-Read-only Kalshi dashboard — preview branch.
-No automatic trades or real orders.
+Fast public-API preview dashboard.
+One-second countdowns, three-second quote polling.
+Read-only: never places orders.
 """
 
 from datetime import datetime, timezone
@@ -116,9 +117,9 @@ with st.sidebar:
     st.header("⚙️ Dashboard settings")
 
     refresh_seconds = st.selectbox(
-        "Refresh every",
+        "Refresh market prices every",
         [3, 5, 10, 15],
-        index=2,
+        index=0,
         format_func=lambda n: f"{n} seconds",
     )
 
@@ -156,12 +157,14 @@ def quote(market, side, kind):
     dollars = number(
         market.get(f"{side}_{kind}_dollars")
     )
+
     if dollars is not None:
         return dollars
 
     cents = number(
         market.get(f"{side}_{kind}")
     )
+
     return cents / 100 if cents is not None else None
 
 
@@ -176,13 +179,17 @@ def fmt_cents(value):
 def parse_time(value):
     if not value:
         return None
+
     try:
         dt = datetime.fromisoformat(
             str(value).replace("Z", "+00:00")
         )
+
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+
         return dt
+
     except (ValueError, TypeError):
         return None
 
@@ -195,6 +202,7 @@ def market_target(market):
         "cap_strike",
     ):
         value = market.get(field)
+
         if value not in (None, ""):
             try:
                 return f"${float(value):,.3f}"
@@ -226,7 +234,11 @@ def verified_direction(market):
     return any(re.search(p, text) for p in patterns)
 
 
-@st.cache_data(ttl=5, show_spinner=False)
+# ============================================
+# PUBLIC KALSHI API
+# ============================================
+
+@st.cache_data(ttl=2, show_spinner=False)
 def fetch_markets(series):
     response = requests.get(
         f"{API}/markets",
@@ -235,9 +247,11 @@ def fetch_markets(series):
             "status": "open",
             "limit": 200,
         },
-        timeout=12,
+        timeout=6,
     )
+
     response.raise_for_status()
+
     return response.json().get("markets", [])
 
 
@@ -250,8 +264,9 @@ def fetch_recent(series):
             "status": "settled",
             "limit": 100,
         },
-        timeout=12,
+        timeout=8,
     )
+
     response.raise_for_status()
 
     markets = [
@@ -263,9 +278,7 @@ def fetch_recent(series):
     markets.sort(
         key=lambda m: (
             parse_time(m.get("close_time"))
-            or datetime.min.replace(
-                tzinfo=timezone.utc
-            )
+            or datetime.min.replace(tzinfo=timezone.utc)
         ),
         reverse=True,
     )
@@ -299,9 +312,7 @@ def current_market(markets):
         active or eligible,
         key=lambda m: (
             parse_time(m.get("close_time"))
-            or datetime.max.replace(
-                tzinfo=timezone.utc
-            )
+            or datetime.max.replace(tzinfo=timezone.utc)
         ),
     )
 
@@ -320,6 +331,40 @@ def midpoint(market):
     return None
 
 
+# ============================================
+# ONE-SECOND COUNTDOWN FRAGMENT
+# ============================================
+
+@st.fragment(run_every="1s")
+def live_countdown(close_time):
+    """Update countdown without rerunning the full app."""
+
+    close = parse_time(close_time)
+
+    if close is None:
+        st.metric("⏱️ Closes in", "—")
+        return
+
+    remaining = max(
+        0,
+        int(
+            (close - datetime.now(timezone.utc))
+            .total_seconds()
+        ),
+    )
+
+    minutes, seconds = divmod(remaining, 60)
+
+    st.metric(
+        "⏱️ Closes in",
+        f"{minutes:02d}:{seconds:02d}",
+    )
+
+
+# ============================================
+# FLIP RADAR
+# ============================================
+
 def update_radar(ticker, name, value):
     now = datetime.now(timezone.utc)
 
@@ -333,8 +378,9 @@ def update_radar(ticker, name, value):
 
     if (
         not history
-        or (now - history[-1][0]).total_seconds()
-        >= max(2, refresh_seconds - 1)
+        or (
+            now - history[-1][0]
+        ).total_seconds() >= max(2, refresh_seconds - 1)
     ):
         history.append(
             (now, value, "YES midpoint")
@@ -346,6 +392,7 @@ def update_radar(ticker, name, value):
 
     previous = history[-2][1] - history[-3][1]
     latest = history[-1][1] - history[-2][1]
+
     magnitude = abs(latest) * 100
 
     flip_up = previous <= -0.005 and latest >= 0.005
@@ -380,6 +427,10 @@ def update_radar(ticker, name, value):
     return label, magnitude
 
 
+# ============================================
+# TRACKER HELPERS
+# ============================================
+
 def safe_store(factory):
     try:
         return factory(st.secrets)
@@ -401,7 +452,7 @@ def safe_rows(store):
 
 
 # ============================================
-# TRACKERS
+# INITIALIZE TRACKERS
 # ============================================
 
 call_store = safe_store(store_from_secrets)
@@ -418,6 +469,11 @@ for name, series, emoji in SERIES:
         )
     except (requests.RequestException, ValueError):
         active_markets[series] = None
+
+
+# ============================================
+# RUN EARLY AND LOCKED TRACKERS
+# ============================================
 
 if call_store:
     try:
@@ -436,6 +492,7 @@ if early_store:
         )
     except Exception as exc:
         st.sidebar.warning(f"Early tracker: {exc}")
+
 
 locked_rows = safe_rows(call_store)
 early_rows = safe_rows(early_store)
@@ -503,18 +560,20 @@ st.markdown(
 )
 
 st.caption(
-    f"Live quotes · {refresh_seconds}-second refresh · "
-    "Experimental paper signals · No automatic trades"
+    f"Automatic public-API quotes · "
+    f"{refresh_seconds}-second refresh · "
+    "One-second countdowns · No automatic trades"
 )
 
 st.info(
-    "Market-implied directional calls are not independent "
-    "predictions or guaranteed profitable trades."
+    "Quotes are polled from Kalshi's public API. "
+    "This is not authenticated live streaming. "
+    "Prices can lag during rapid market moves."
 )
 
 
 # ============================================
-# MARKET GRID
+# MARKET CARDS
 # ============================================
 
 def market_card(name, series, emoji):
@@ -529,16 +588,9 @@ def market_card(name, series, emoji):
 
         ticker = market.get("ticker", series)
 
-        close = parse_time(
+        close_raw = (
             market.get("close_time")
             or market.get("latest_expiration_time")
-        )
-
-        now = datetime.now(timezone.utc)
-
-        remaining = (
-            max(0, int((close - now).total_seconds()))
-            if close else None
         )
 
         verified = verified_direction(market)
@@ -547,21 +599,15 @@ def market_card(name, series, emoji):
         yes_ask = quote(market, "yes", "ask")
         no_bid = quote(market, "no", "bid")
         no_ask = quote(market, "no", "ask")
+
         mid = midpoint(market)
 
         st.caption(
             f"Target: {market_target(market)}"
         )
 
-        st.metric(
-            "⏱️ Closes in",
-            (
-                f"{remaining // 60:02d}:"
-                f"{remaining % 60:02d}"
-                if remaining is not None
-                else "—"
-            ),
-        )
+        # Timer runs separately every second.
+        live_countdown(close_raw)
 
         left, right = st.columns(2, gap="small")
 
@@ -598,11 +644,14 @@ def market_card(name, series, emoji):
         else:
             lean = "⚪ NO CLEAR CALL"
 
-        st.markdown(f"**Market lean: {lean}**")
+        st.markdown(
+            f"**Market lean: {lean}**"
+        )
 
         st.caption(
             f"YES midpoint: {fmt_cents(mid)} · "
-            f"Radar: {label} · Move: {magnitude:.1f}¢"
+            f"Radar: {label} · "
+            f"Move: {magnitude:.1f}¢"
         )
 
         early = early_map.get(ticker)
@@ -619,13 +668,15 @@ def market_card(name, series, emoji):
         st.write(
             "**🔒 Locked:** "
             + (
-                f"{locked.get('call')} · {locked.get('status')}"
+                f"{locked.get('call')} · "
+                f"{locked.get('status')}"
                 if locked else "Awaiting lock window"
             )
         )
 
         with st.expander("📡 Radar, pressure & details"):
             st.caption(f"Contract: {ticker}")
+
             st.markdown("**🐋 Pressure & Whale Radar**")
 
             try:
@@ -635,35 +686,47 @@ def market_card(name, series, emoji):
                     f"Pressure unavailable: {exc}"
                 )
 
-            st.markdown("**📜 Last 10 settled markets**")
+            st.markdown(
+                "**📜 Last 10 settled markets**"
+            )
 
             try:
                 recent = fetch_recent(series)
 
                 arrows = [
-                    "🟢↑"
-                    if str(m.get("result")).lower() == "yes"
-                    else "🔴↓"
-                    for m in reversed(recent)
+                    (
+                        "🟢↑"
+                        if str(
+                            item.get("result")
+                        ).lower() == "yes"
+                        else "🔴↓"
+                    )
+                    for item in reversed(recent)
                 ]
 
                 st.write(
                     "  ".join(arrows) or "No results"
                 )
-            except Exception:
-                st.caption("Recent results unavailable.")
 
-            st.markdown("**Official contract rules**")
+            except Exception:
+                st.caption(
+                    "Recent results unavailable."
+                )
+
+            st.markdown(
+                "**Official contract rules**"
+            )
 
             st.write(
                 market.get("rules_primary")
                 or "See Kalshi contract details."
             )
+
             st.write(
                 market.get("rules_secondary") or ""
             )
 
-        # Experimental paper-only Strong LOCK.
+        # Strong LOCK: paper-only evaluation.
         if locked:
             history = (
                 st.session_state.quote_history
@@ -683,6 +746,7 @@ def market_card(name, series, emoji):
                 st.markdown(
                     f"**🔐 Strong LOCK: {decision}**"
                 )
+
                 st.caption(reason)
 
                 if (
@@ -709,6 +773,10 @@ def market_card(name, series, emoji):
                     f"Strong LOCK unavailable: {exc}"
                 )
 
+
+# ============================================
+# FOUR-MARKET GRID
+# ============================================
 
 st.markdown("### ⚡ LIVE MARKET GRID")
 
@@ -758,11 +826,13 @@ def scoreboard(title, rows, label):
 
     a.metric("Wins", wins)
     b.metric("Losses", losses)
+
     c.metric(
         "Win rate",
         f"{wins / len(graded):.1%}"
         if graded else "—",
     )
+
     d.metric("Pending", pending)
 
     for name, series, emoji in SERIES:
@@ -772,13 +842,13 @@ def scoreboard(title, rows, label):
         ]
 
         w = sum(
-            r.get("status") == "win"
+            str(r.get("status")).lower() == "win"
             for r in subset
         )
 
         st.caption(
-            f"{emoji} {name}: {w} W / "
-            f"{len(subset) - w} L"
+            f"{emoji} {name}: "
+            f"{w} W / {len(subset) - w} L"
         )
 
     with st.expander(f"📜 {label} history"):
@@ -789,7 +859,9 @@ def scoreboard(title, rows, label):
                 width="stretch",
             )
         else:
-            st.caption("No entries recorded yet.")
+            st.caption(
+                "No entries recorded yet."
+            )
 
 
 scoreboard(
@@ -799,7 +871,7 @@ scoreboard(
 )
 
 st.caption(
-    "Directional win rate is not trading profitability."
+    "Directional accuracy is not trading profitability."
 )
 
 scoreboard(
@@ -810,12 +882,10 @@ scoreboard(
 
 
 # ============================================
-# WATCH PAPER P&L SCOREBOARD
+# WATCH PAPER P&L
 # ============================================
 
 def watch_entry_pnl(row):
-    """Estimated net for one hypothetical contract."""
-
     status = str(
         row.get("status", "")
     ).lower()
@@ -865,9 +935,9 @@ st.subheader(
 )
 
 st.caption(
-    "Hypothetical one-contract results using stored "
-    "WATCH entries, a $1 winning payout, and an "
-    "assumed 2¢ total fee. No real orders."
+    "Hypothetical one-contract results using "
+    "stored WATCH entries, a $1 winning payout, "
+    "and an assumed 2¢ total fee. No real orders."
 )
 
 watch_wins = sum(
@@ -891,6 +961,7 @@ watch_valid_pnl = []
 
 for row in paper_rows:
     value = watch_entry_pnl(row)
+
     if value is not None:
         watch_valid_pnl.append(value)
 
@@ -941,6 +1012,7 @@ for name, series, emoji in SERIES:
 
     for row in market_rows:
         value = watch_entry_pnl(row)
+
         if value is not None:
             values.append(value)
 
@@ -952,10 +1024,13 @@ for name, series, emoji in SERIES:
 
     st.caption(
         f"{emoji} {name}: "
-        f"{wins} W / {losses} L · {pnl_label}"
+        f"{wins} W / {losses} L · "
+        f"{pnl_label}"
     )
 
-with st.expander("📜 WATCH paper trading history"):
+with st.expander(
+    "📜 WATCH paper trading history"
+):
     if paper_rows:
         st.dataframe(
             paper_rows,
@@ -968,11 +1043,9 @@ with st.expander("📜 WATCH paper trading history"):
         )
 
 st.caption(
-    "⚠️ WATCH historical totals are provisional. "
-    "The existing paper_tracker.py may have "
-    "incorrectly graded BELOW entries. "
-    "Historical entries must be regraded before "
-    "relying on these P&L estimates."
+    "⚠️ WATCH historical results remain provisional "
+    "until all entries have been checked against "
+    "their official settlements."
 )
 
 
@@ -987,9 +1060,8 @@ scoreboard(
 )
 
 st.caption(
-    "Strong LOCK is experimental. "
-    "Paper results do not guarantee executable "
-    "fills or future profits."
+    "Strong LOCK is experimental and paper-only. "
+    "No guaranteed fills or profits."
 )
 
 
@@ -1012,28 +1084,32 @@ if events:
         )
 else:
     st.caption(
-        "No alerts yet. Keep the dashboard open "
-        "for several refreshes."
+        "No alerts yet. Keep the dashboard "
+        "open for several refreshes."
     )
 
 
 # ============================================
-# FOOTER — SYNTAX ERROR FIXED
+# FOOTER
 # ============================================
 
 st.caption(
-    "Last refresh: "
+    "Last market refresh: "
     + datetime.now(CENTRAL).strftime(
         "%b %d, %Y · %I:%M:%S %p %Z"
     )
 )
 
 st.caption(
-    "Read-only Kalshi API dashboard. "
+    "Read-only Kalshi public API dashboard. "
     "No trade execution. Quotes may be delayed."
 )
 
+# Refresh market data automatically.
+# Countdown fragments independently update
+# every second between full app reruns.
+
 st_autorefresh(
     interval=refresh_seconds * 1000,
-    key="queens_edge_refresh",
+    key="queens_edge_market_refresh",
 )
