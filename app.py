@@ -1,6 +1,7 @@
 
-"""QUEEN'S EDGE | 254 — read-only Kalshi dashboard.
-Preview version. No real trades or order placement.
+"""QUEEN'S EDGE | 254
+Read-only Kalshi dashboard — preview branch.
+No automatic trades or real orders.
 """
 
 from datetime import datetime, timezone
@@ -46,68 +47,70 @@ st.set_page_config(
     layout="wide",
 )
 
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background: radial-gradient(
-            ellipse at top,
-            #1c0b37 0%,
-            #070714 48%,
-            #05050e 100%
-        );
-        color: #e9e6f7;
-    }
-    .block-container {
-        max-width: 1550px;
-        padding-top: 0.7rem;
-    }
-    [data-testid="stVerticalBlockBorderWrapper"] {
-        border-color: #6d28d9 !important;
-        border-radius: 14px !important;
-    }
-    [data-testid="stSidebar"] {
-        background: #0d0920;
-    }
-    .stApp h1, .stApp h2, .stApp h3 {
-        color: #e8d9ff;
-    }
-    .qe-title {
-        text-align: center;
-        font-size: 2.2rem;
-        font-weight: 900;
-        color: #d8b4fe;
-    }
-    .qe-subtitle {
-        text-align: center;
-        color: #bca2f5;
-        letter-spacing: .12em;
-        margin-bottom: 20px;
-    }
-    .qe-quote {
-        padding: 12px;
-        border-radius: 12px;
-        border: 1px solid;
-        min-height: 105px;
-        font-size: .85rem;
-    }
-    .qe-yes {
-        color: #65e6ac;
-        border-color: #178d61;
-        background: rgba(15,140,84,.12);
-    }
-    .qe-no {
-        color: #ff92aa;
-        border-color: #ad3358;
-        background: rgba(180,35,70,.12);
-    }
-    .qe-quote strong {
-        font-size: 1.15rem;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown("""
+<style>
+.stApp {
+    background: radial-gradient(
+        ellipse at top,
+        #1c0b37 0%,
+        #070714 48%,
+        #05050e 100%
+    );
+    color: #e9e6f7;
+}
+.block-container {
+    max-width: 1550px;
+    padding-top: 0.7rem;
+}
+[data-testid="stVerticalBlockBorderWrapper"] {
+    border-color: #6d28d9 !important;
+    border-radius: 14px !important;
+}
+[data-testid="stSidebar"] {
+    background: #0d0920;
+}
+.stApp h1, .stApp h2, .stApp h3 {
+    color: #e8d9ff;
+}
+.qe-title {
+    text-align: center;
+    font-size: 2.2rem;
+    font-weight: 900;
+    color: #d8b4fe;
+}
+.qe-subtitle {
+    text-align: center;
+    color: #bca2f5;
+    letter-spacing: .12em;
+    margin-bottom: 20px;
+}
+.qe-quote {
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px solid;
+    min-height: 105px;
+    font-size: .85rem;
+}
+.qe-yes {
+    color: #65e6ac;
+    border-color: #178d61;
+    background: rgba(15,140,84,.12);
+}
+.qe-no {
+    color: #ff92aa;
+    border-color: #ad3358;
+    background: rgba(180,35,70,.12);
+}
+.qe-quote strong {
+    font-size: 1.15rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ============================================
+# SETTINGS
+# ============================================
 
 with st.sidebar:
     st.header("⚙️ Dashboard settings")
@@ -116,14 +119,12 @@ with st.sidebar:
         "Refresh every",
         [3, 5, 10, 15],
         index=2,
-        format_func=lambda value: f"{value} seconds",
+        format_func=lambda n: f"{n} seconds",
     )
 
     sudden_cents = st.slider(
         "Sudden move threshold (¢)",
-        2,
-        15,
-        4,
+        2, 15, 4,
     )
 
     if st.button(
@@ -138,6 +139,10 @@ st.session_state.setdefault("quote_history", {})
 st.session_state.setdefault("radar_events", [])
 
 
+# ============================================
+# HELPERS
+# ============================================
+
 def number(value):
     try:
         if value in (None, ""):
@@ -148,47 +153,36 @@ def number(value):
 
 
 def quote(market, side, kind):
-    dollar = number(
+    dollars = number(
         market.get(f"{side}_{kind}_dollars")
     )
-
-    if dollar is not None:
-        return dollar
+    if dollars is not None:
+        return dollars
 
     cents = number(
         market.get(f"{side}_{kind}")
     )
-
-    return (
-        cents / 100
-        if cents is not None
-        else None
-    )
+    return cents / 100 if cents is not None else None
 
 
 def fmt_cents(value):
-    if value is None:
-        return "—"
-
-    return f"{value * 100:.1f}¢"
+    return (
+        f"{value * 100:.1f}¢"
+        if value is not None
+        else "—"
+    )
 
 
 def parse_time(value):
     if not value:
         return None
-
     try:
         dt = datetime.fromisoformat(
             str(value).replace("Z", "+00:00")
         )
-
-        if dt.tzinfo:
-            return dt
-
-        return dt.replace(
-            tzinfo=timezone.utc
-        )
-
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except (ValueError, TypeError):
         return None
 
@@ -201,22 +195,16 @@ def market_target(market):
         "cap_strike",
     ):
         value = market.get(field)
-
         if value not in (None, ""):
             try:
                 return f"${float(value):,.3f}"
             except (ValueError, TypeError):
                 return str(value)
 
-    return (
-        market.get("yes_sub_title")
-        or "See rules"
-    )
+    return market.get("yes_sub_title") or "See rules"
 
 
 def verified_direction(market):
-    """Conservative YES=ABOVE verification."""
-
     text = " ".join(
         str(market.get(key) or "")
         for key in (
@@ -235,16 +223,10 @@ def verified_direction(market):
         r"(?:above|higher|greater).*?(?:settles|resolves) to yes",
     ]
 
-    return any(
-        re.search(pattern, text)
-        for pattern in patterns
-    )
+    return any(re.search(p, text) for p in patterns)
 
 
-@st.cache_data(
-    ttl=5,
-    show_spinner=False,
-)
+@st.cache_data(ttl=5, show_spinner=False)
 def fetch_markets(series):
     response = requests.get(
         f"{API}/markets",
@@ -255,18 +237,11 @@ def fetch_markets(series):
         },
         timeout=12,
     )
-
     response.raise_for_status()
-
-    return response.json().get(
-        "markets", []
-    )
+    return response.json().get("markets", [])
 
 
-@st.cache_data(
-    ttl=60,
-    show_spinner=False,
-)
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_recent(series):
     response = requests.get(
         f"{API}/markets",
@@ -277,24 +252,17 @@ def fetch_recent(series):
         },
         timeout=12,
     )
-
     response.raise_for_status()
 
     markets = [
-        market
-        for market in response.json().get(
-            "markets", []
-        )
-        if str(
-            market.get("result", "")
-        ).lower() in ("yes", "no")
+        m for m in response.json().get("markets", [])
+        if str(m.get("result", "")).lower()
+        in ("yes", "no")
     ]
 
     markets.sort(
-        key=lambda market: (
-            parse_time(
-                market.get("close_time")
-            )
+        key=lambda m: (
+            parse_time(m.get("close_time"))
             or datetime.min.replace(
                 tzinfo=timezone.utc
             )
@@ -309,15 +277,10 @@ def current_market(markets):
     now = datetime.now(timezone.utc)
 
     eligible = [
-        market
-        for market in markets
+        m for m in markets
         if (
-            not parse_time(
-                market.get("close_time")
-            )
-            or parse_time(
-                market.get("close_time")
-            ) > now
+            not parse_time(m.get("close_time"))
+            or parse_time(m.get("close_time")) > now
         )
     ]
 
@@ -325,26 +288,17 @@ def current_market(markets):
         return None
 
     active = [
-        market
-        for market in eligible
+        m for m in eligible
         if (
-            not parse_time(
-                market.get("open_time")
-            )
-            or parse_time(
-                market.get("open_time")
-            ) <= now
+            not parse_time(m.get("open_time"))
+            or parse_time(m.get("open_time")) <= now
         )
     ]
 
-    pool = active or eligible
-
     return min(
-        pool,
-        key=lambda market: (
-            parse_time(
-                market.get("close_time")
-            )
+        active or eligible,
+        key=lambda m: (
+            parse_time(m.get("close_time"))
             or datetime.max.replace(
                 tzinfo=timezone.utc
             )
@@ -353,13 +307,8 @@ def current_market(markets):
 
 
 def midpoint(market):
-    bid = quote(
-        market, "yes", "bid"
-    )
-
-    ask = quote(
-        market, "yes", "ask"
-    )
+    bid = quote(market, "yes", "bid")
+    ask = quote(market, "yes", "ask")
 
     if (
         bid is not None
@@ -384,45 +333,24 @@ def update_radar(ticker, name, value):
 
     if (
         not history
-        or (
-            now - history[-1][0]
-        ).total_seconds()
+        or (now - history[-1][0]).total_seconds()
         >= max(2, refresh_seconds - 1)
     ):
         history.append(
             (now, value, "YES midpoint")
         )
-
         del history[:-60]
 
     if len(history) < 3:
         return "Warming up", 0.0
 
-    previous = (
-        history[-2][1]
-        - history[-3][1]
-    )
-
-    latest = (
-        history[-1][1]
-        - history[-2][1]
-    )
-
+    previous = history[-2][1] - history[-3][1]
+    latest = history[-1][1] - history[-2][1]
     magnitude = abs(latest) * 100
 
-    flip_up = (
-        previous <= -0.005
-        and latest >= 0.005
-    )
-
-    flip_down = (
-        previous >= 0.005
-        and latest <= -0.005
-    )
-
-    sudden = (
-        magnitude >= sudden_cents
-    )
+    flip_up = previous <= -0.005 and latest >= 0.005
+    flip_down = previous >= 0.005 and latest <= -0.005
+    sudden = magnitude >= sudden_cents
 
     if flip_up:
         label = "🔺 Bullish flip"
@@ -434,26 +362,19 @@ def update_radar(ticker, name, value):
         label = "Scanning"
 
     if label != "Scanning":
-        events = (
-            st.session_state.radar_events
-        )
+        events = st.session_state.radar_events
 
         if not events or (
             events[0]["ticker"] != ticker
-            or events[0]["time"]
-            != history[-1][0]
+            or events[0]["time"] != history[-1][0]
         ):
-            events.insert(
-                0,
-                {
-                    "ticker": ticker,
-                    "market": name,
-                    "label": label,
-                    "time": history[-1][0],
-                    "move": latest * 100,
-                },
-            )
-
+            events.insert(0, {
+                "ticker": ticker,
+                "market": name,
+                "label": label,
+                "time": history[-1][0],
+                "move": latest * 100,
+            })
             del events[50:]
 
     return label, magnitude
@@ -472,7 +393,6 @@ def safe_rows(store):
 
     try:
         return store.all()
-
     except Exception as exc:
         st.warning(
             f"Tracker history unavailable: {exc}"
@@ -481,41 +401,23 @@ def safe_rows(store):
 
 
 # ============================================
-# INITIALIZE PERSISTENT TRACKERS
+# TRACKERS
 # ============================================
 
-call_store = safe_store(
-    store_from_secrets
-)
-
-early_store = safe_store(
-    early_store_from_secrets
-)
-
-paper_store = safe_store(
-    paper_store_from_secrets
-)
-
-strong_store = safe_store(
-    strong_store_from_secrets
-)
+call_store = safe_store(store_from_secrets)
+early_store = safe_store(early_store_from_secrets)
+paper_store = safe_store(paper_store_from_secrets)
+strong_store = safe_store(strong_store_from_secrets)
 
 active_markets = {}
 
 for name, series, emoji in SERIES:
     try:
-        active_markets[series] = (
-            current_market(
-                fetch_markets(series)
-            )
+        active_markets[series] = current_market(
+            fetch_markets(series)
         )
-
-    except (
-        requests.RequestException,
-        ValueError,
-    ):
+    except (requests.RequestException, ValueError):
         active_markets[series] = None
-
 
 if call_store:
     try:
@@ -524,10 +426,7 @@ if call_store:
             current_by_series=active_markets,
         )
     except Exception as exc:
-        st.sidebar.warning(
-            f"Locked tracker: {exc}"
-        )
-
+        st.sidebar.warning(f"Locked tracker: {exc}")
 
 if early_store:
     try:
@@ -536,10 +435,7 @@ if early_store:
             current_by_series=active_markets,
         )
     except Exception as exc:
-        st.sidebar.warning(
-            f"Early tracker: {exc}"
-        )
-
+        st.sidebar.warning(f"Early tracker: {exc}")
 
 locked_rows = safe_rows(call_store)
 early_rows = safe_rows(early_store)
@@ -558,48 +454,26 @@ early_map = {
     if row.get("ticker")
 }
 
-
 if paper_store:
     try:
-        paper_grade_pending(
-            paper_store,
-            paper_rows,
-        )
-
-        paper_rows = safe_rows(
-            paper_store
-        )
-
+        paper_grade_pending(paper_store, paper_rows)
+        paper_rows = safe_rows(paper_store)
     except Exception as exc:
-        st.sidebar.warning(
-            f"Paper grading: {exc}"
-        )
-
+        st.sidebar.warning(f"Paper grading: {exc}")
 
 if strong_store:
     try:
-        strong_grade_pending(
-            strong_store,
-            strong_rows,
-        )
-
-        strong_rows = safe_rows(
-            strong_store
-        )
-
+        strong_grade_pending(strong_store, strong_rows)
+        strong_rows = safe_rows(strong_store)
     except Exception as exc:
-        st.sidebar.warning(
-            f"Strong grading: {exc}"
-        )
+        st.sidebar.warning(f"Strong grading: {exc}")
 
 
 # ============================================
-# DASHBOARD BANNER
+# HEADER
 # ============================================
 
-banner = Path(__file__).with_name(
-    "queens_banner.jpg"
-)
+banner = Path(__file__).with_name("queens_banner.jpg")
 
 if banner.exists():
     encoded = base64.b64encode(
@@ -612,7 +486,6 @@ if banner.exists():
         'object-fit:cover;border-radius:14px;" />',
         unsafe_allow_html=True,
     )
-
 else:
     st.markdown(
         '<div class="qe-title">'
@@ -621,96 +494,59 @@ else:
         unsafe_allow_html=True,
     )
 
-
 st.markdown(
     '<div class="qe-subtitle">'
     '⚡ LIVE KALSHI MARKETS · '
-    'BUILT BY K HENDO | 254 '
-    '· READ ONLY'
+    'BUILT BY K HENDO | 254 · READ ONLY'
     '</div>',
     unsafe_allow_html=True,
 )
 
 st.caption(
-    f"Live quotes · "
-    f"{refresh_seconds}-second refresh · "
-    "Experimental paper signals · "
-    "No automatic trades"
+    f"Live quotes · {refresh_seconds}-second refresh · "
+    "Experimental paper signals · No automatic trades"
 )
 
 st.info(
-    "Market-implied directional calls "
-    "are not independent predictions "
-    "or guaranteed profitable trades."
+    "Market-implied directional calls are not independent "
+    "predictions or guaranteed profitable trades."
 )
 
 
 # ============================================
-# LIVE MARKET CARDS
+# MARKET GRID
 # ============================================
 
 def market_card(name, series, emoji):
     with st.container(border=True):
-        st.subheader(
-            f"{emoji} {name}"
-        )
+        st.subheader(f"{emoji} {name}")
 
-        market = active_markets.get(
-            series
-        )
+        market = active_markets.get(series)
 
         if not market:
-            st.warning(
-                "No active contract available."
-            )
+            st.warning("No active contract available.")
             return
 
-        ticker = market.get(
-            "ticker", series
-        )
+        ticker = market.get("ticker", series)
 
         close = parse_time(
             market.get("close_time")
-            or market.get(
-                "latest_expiration_time"
-            )
+            or market.get("latest_expiration_time")
         )
 
-        now = datetime.now(
-            timezone.utc
-        )
+        now = datetime.now(timezone.utc)
 
         remaining = (
-            max(
-                0,
-                int(
-                    (close - now).total_seconds()
-                ),
-            )
-            if close
-            else None
+            max(0, int((close - now).total_seconds()))
+            if close else None
         )
 
-        verified = verified_direction(
-            market
-        )
+        verified = verified_direction(market)
 
-        yes_bid = quote(
-            market, "yes", "bid"
-        )
-
-        yes_ask = quote(
-            market, "yes", "ask"
-        )
-
-        no_bid = quote(
-            market, "no", "bid"
-        )
-
-        no_ask = quote(
-            market, "no", "ask"
-        )
-
+        yes_bid = quote(market, "yes", "bid")
+        yes_ask = quote(market, "yes", "ask")
+        no_bid = quote(market, "no", "bid")
+        no_ask = quote(market, "no", "ask")
         mid = midpoint(market)
 
         st.caption(
@@ -727,10 +563,7 @@ def market_card(name, series, emoji):
             ),
         )
 
-        left, right = st.columns(
-            2,
-            gap="small",
-        )
+        left, right = st.columns(2, gap="small")
 
         with left:
             st.markdown(
@@ -752,167 +585,104 @@ def market_card(name, series, emoji):
                 unsafe_allow_html=True,
             )
 
-        label, magnitude = (
-            update_radar(
-                ticker,
-                name,
-                mid,
-            )
+        label, magnitude = update_radar(
+            ticker, name, mid
         )
 
         if mid is None or not verified:
-            lean = (
-                "⚪ UNVERIFIED / NO CALL"
-            )
-
+            lean = "⚪ UNVERIFIED / NO CALL"
         elif mid >= 0.60:
             lean = "🟢 ABOVE TARGET"
-
         elif mid <= 0.40:
             lean = "🔴 BELOW TARGET"
-
         else:
             lean = "⚪ NO CLEAR CALL"
 
-        st.markdown(
-            f"**Market lean: {lean}**"
-        )
+        st.markdown(f"**Market lean: {lean}**")
 
         st.caption(
             f"YES midpoint: {fmt_cents(mid)} · "
-            f"Radar: {label} · "
-            f"Move: {magnitude:.1f}¢"
+            f"Radar: {label} · Move: {magnitude:.1f}¢"
         )
 
-        early = early_map.get(
-            ticker
-        )
-
-        locked = locked_map.get(
-            ticker
-        )
+        early = early_map.get(ticker)
+        locked = locked_map.get(ticker)
 
         st.write(
             "**🌅 Early:** "
             + (
-                str(
-                    early.get("call")
-                )
-                if early
-                else "Not recorded"
+                str(early.get("call"))
+                if early else "Not recorded"
             )
         )
 
         st.write(
             "**🔒 Locked:** "
             + (
-                f"{locked.get('call')} · "
-                f"{locked.get('status')}"
-                if locked
-                else "Awaiting lock window"
+                f"{locked.get('call')} · {locked.get('status')}"
+                if locked else "Awaiting lock window"
             )
         )
 
-        with st.expander(
-            "📡 Radar, pressure & details"
-        ):
-            st.caption(
-                f"Contract: {ticker}"
-            )
-
-            st.markdown(
-                "**🐋 Pressure & Whale Radar**"
-            )
+        with st.expander("📡 Radar, pressure & details"):
+            st.caption(f"Contract: {ticker}")
+            st.markdown("**🐋 Pressure & Whale Radar**")
 
             try:
-                show_pressure_radar(
-                    name,
-                    ticker,
-                )
+                show_pressure_radar(name, ticker)
             except Exception as exc:
                 st.caption(
                     f"Pressure unavailable: {exc}"
                 )
 
-            st.markdown(
-                "**📜 Last 10 settled markets**"
-            )
+            st.markdown("**📜 Last 10 settled markets**")
 
             try:
-                recent = fetch_recent(
-                    series
-                )
+                recent = fetch_recent(series)
 
                 arrows = [
-                    (
-                        "🟢↑"
-                        if str(
-                            market_item.get(
-                                "result"
-                            )
-                        ).lower() == "yes"
-                        else "🔴↓"
-                    )
-                    for market_item in reversed(
-                        recent
-                    )
+                    "🟢↑"
+                    if str(m.get("result")).lower() == "yes"
+                    else "🔴↓"
+                    for m in reversed(recent)
                 ]
 
                 st.write(
-                    "  ".join(arrows)
-                    or "No results"
+                    "  ".join(arrows) or "No results"
                 )
-
             except Exception:
-                st.caption(
-                    "Recent results unavailable."
-                )
+                st.caption("Recent results unavailable.")
 
-            st.markdown(
-                "**Official contract rules**"
-            )
+            st.markdown("**Official contract rules**")
 
             st.write(
-                market.get(
-                    "rules_primary"
-                )
+                market.get("rules_primary")
                 or "See Kalshi contract details."
             )
-
             st.write(
-                market.get(
-                    "rules_secondary"
-                )
-                or ""
+                market.get("rules_secondary") or ""
             )
 
-        # Strong LOCK paper evaluation.
-        # No real orders are placed.
-
+        # Experimental paper-only Strong LOCK.
         if locked:
             history = (
-                st.session_state
-                .quote_history
+                st.session_state.quote_history
                 .get(ticker, [])
             )
 
             try:
-                (
-                    decision,
-                    reason,
-                    ask,
-                    strength,
-                ) = strong_evaluate(
-                    locked,
-                    market,
-                    history,
-                    verified,
+                decision, reason, ask, strength = (
+                    strong_evaluate(
+                        locked,
+                        market,
+                        history,
+                        verified,
+                    )
                 )
 
                 st.markdown(
                     f"**🔐 Strong LOCK: {decision}**"
                 )
-
                 st.caption(reason)
 
                 if (
@@ -920,30 +690,19 @@ def market_card(name, series, emoji):
                     and strong_store
                     and ask is not None
                 ):
-                    strong_store.record_once(
-                        {
-                            "ticker": ticker,
-                            "market_name": name,
-                            "series_ticker": series,
-                            "side": locked.get(
-                                "call"
-                            ),
-                            "decision": "ENTER",
-                            "entry_price": ask,
-                            "yes_midpoint": float(
-                                locked.get(
-                                    "yes_midpoint"
-                                )
-                                or 0
-                            ),
-                            "close_time": (
-                                market.get(
-                                    "close_time"
-                                )
-                            ),
-                            "status": "pending",
-                        }
-                    )
+                    strong_store.record_once({
+                        "ticker": ticker,
+                        "market_name": name,
+                        "series_ticker": series,
+                        "side": locked.get("call"),
+                        "decision": "ENTER",
+                        "entry_price": ask,
+                        "yes_midpoint": float(
+                            locked.get("yes_midpoint") or 0
+                        ),
+                        "close_time": market.get("close_time"),
+                        "status": "pending",
+                    })
 
             except Exception as exc:
                 st.caption(
@@ -951,148 +710,87 @@ def market_card(name, series, emoji):
                 )
 
 
-# ============================================
-# FOUR-MARKET GRID
-# ============================================
+st.markdown("### ⚡ LIVE MARKET GRID")
 
-st.markdown(
-    "### ⚡ LIVE MARKET GRID"
-)
-
-top_left, top_right = st.columns(
-    2,
-    gap="small",
-)
+top_left, top_right = st.columns(2, gap="small")
 
 with top_left:
-    market_card(
-        *SERIES[0]
-    )
+    market_card(*SERIES[0])
 
 with top_right:
-    market_card(
-        *SERIES[1]
-    )
+    market_card(*SERIES[1])
 
-bottom_left, bottom_right = st.columns(
-    2,
-    gap="small",
-)
+bottom_left, bottom_right = st.columns(2, gap="small")
 
 with bottom_left:
-    market_card(
-        *SERIES[2]
-    )
+    market_card(*SERIES[2])
 
 with bottom_right:
-    market_card(
-        *SERIES[3]
-    )
+    market_card(*SERIES[3])
 
 
 # ============================================
-# GENERAL CALL SCOREBOARD
+# STANDARD SCOREBOARDS
 # ============================================
 
 def scoreboard(title, rows, label):
     st.subheader(title)
 
     graded = [
-        row
-        for row in rows
-        if str(
-            row.get("status")
-        ).lower() in (
-            "win",
-            "loss",
-        )
+        r for r in rows
+        if str(r.get("status")).lower()
+        in ("win", "loss")
     ]
 
     wins = sum(
-        str(
-            row.get("status")
-        ).lower() == "win"
-        for row in graded
+        str(r.get("status")).lower() == "win"
+        for r in graded
     )
 
-    losses = (
-        len(graded) - wins
-    )
+    losses = len(graded) - wins
 
     pending = sum(
-        str(
-            row.get("status")
-        ).lower() == "pending"
-        for row in rows
+        str(r.get("status")).lower() == "pending"
+        for r in rows
     )
 
     a, b, c, d = st.columns(4)
 
-    a.metric(
-        "Wins",
-        wins,
-    )
-
-    b.metric(
-        "Losses",
-        losses,
-    )
-
+    a.metric("Wins", wins)
+    b.metric("Losses", losses)
     c.metric(
         "Win rate",
-        (
-            f"{wins / len(graded):.1%}"
-            if graded
-            else "—"
-        ),
+        f"{wins / len(graded):.1%}"
+        if graded else "—",
     )
-
-    d.metric(
-        "Pending",
-        pending,
-    )
+    d.metric("Pending", pending)
 
     for name, series, emoji in SERIES:
         subset = [
-            row
-            for row in graded
-            if row.get(
-                "series_ticker"
-            ) == series
+            r for r in graded
+            if r.get("series_ticker") == series
         ]
 
-        market_wins = sum(
-            row.get(
-                "status"
-            ) == "win"
-            for row in subset
+        w = sum(
+            r.get("status") == "win"
+            for r in subset
         )
 
         st.caption(
-            f"{emoji} {name}: "
-            f"{market_wins} W / "
-            f"{len(subset) - market_wins} L"
+            f"{emoji} {name}: {w} W / "
+            f"{len(subset) - w} L"
         )
 
-    with st.expander(
-        f"📜 {label} history"
-    ):
+    with st.expander(f"📜 {label} history"):
         if rows:
             st.dataframe(
                 rows,
                 hide_index=True,
                 width="stretch",
             )
-
         else:
-            st.caption(
-                "No entries recorded yet."
-            )
+            st.caption("No entries recorded yet.")
 
-
-# ============================================
-# LOCKED CALL SCOREBOARD
-# ============================================
 
 scoreboard(
     "🔒 Locked Call Scoreboard",
@@ -1101,14 +799,8 @@ scoreboard(
 )
 
 st.caption(
-    "Directional win rate is not "
-    "trading profitability."
+    "Directional win rate is not trading profitability."
 )
-
-
-# ============================================
-# EARLY CALL SCOREBOARD
-# ============================================
 
 scoreboard(
     "🌅 Early Call Scoreboard",
@@ -1118,78 +810,43 @@ scoreboard(
 
 
 # ============================================
-# WATCH PAPER TRADING P&L SCOREBOARD
+# WATCH PAPER P&L SCOREBOARD
 # ============================================
 
 def watch_entry_pnl(row):
-    """Estimated net result for one paper contract."""
+    """Estimated net for one hypothetical contract."""
 
     status = str(
-        row.get(
-            "status", ""
-        )
+        row.get("status", "")
     ).lower()
 
-    if status not in (
-        "win",
-        "loss",
-    ):
+    if status not in ("win", "loss"):
         return None
 
     try:
-        entry = float(
-            row.get(
-                "entry_price"
-            )
-        )
-
-    except (
-        TypeError,
-        ValueError,
-    ):
+        entry = float(row.get("entry_price"))
+    except (ValueError, TypeError):
         return None
 
     if not 0 <= entry <= 1:
         return None
 
-    payout = (
-        1.0
-        if status == "win"
-        else 0.0
-    )
+    payout = 1.0 if status == "win" else 0.0
 
-    return (
-        payout
-        - entry
-        - 0.02
-    )
+    return payout - entry - 0.02
 
 
-def watch_market_matches(
-    row,
-    name,
-    series,
-):
+def watch_market_matches(row, name, series):
     recorded_name = str(
-        row.get(
-            "market_name"
-        )
-        or ""
+        row.get("market_name") or ""
     ).strip().lower()
 
     recorded_series = str(
-        row.get(
-            "series_ticker"
-        )
-        or ""
+        row.get("series_ticker") or ""
     ).strip().upper()
 
     aliases = {
-        "WTI Oil": (
-            "wti oil",
-            "oil",
-            "wti",
-        )
+        "WTI Oil": ("wti oil", "oil", "wti")
     }
 
     names = aliases.get(
@@ -1208,67 +865,41 @@ st.subheader(
 )
 
 st.caption(
-    "Hypothetical one-contract results "
-    "using stored WATCH entries, "
-    "a $1 winning payout, and an assumed "
-    "2¢ total fee. No real orders."
+    "Hypothetical one-contract results using stored "
+    "WATCH entries, a $1 winning payout, and an "
+    "assumed 2¢ total fee. No real orders."
 )
 
 watch_wins = sum(
-    str(
-        row.get(
-            "status", ""
-        )
-    ).lower() == "win"
-    for row in paper_rows
+    str(r.get("status", "")).lower() == "win"
+    for r in paper_rows
 )
 
 watch_losses = sum(
-    str(
-        row.get(
-            "status", ""
-        )
-    ).lower() == "loss"
-    for row in paper_rows
+    str(r.get("status", "")).lower() == "loss"
+    for r in paper_rows
 )
 
 watch_pending = sum(
-    str(
-        row.get(
-            "status", ""
-        )
-    ).lower() == "pending"
-    for row in paper_rows
+    str(r.get("status", "")).lower() == "pending"
+    for r in paper_rows
 )
 
-watch_graded = (
-    watch_wins
-    + watch_losses
-)
+watch_graded = watch_wins + watch_losses
 
-watch_valid_pnl = [
-    value
-    for row in paper_rows
-    if (
-        value := watch_entry_pnl(row)
-    ) is not None
-]
+watch_valid_pnl = []
 
-watch_a, watch_b, watch_c, watch_d = (
-    st.columns(4)
-)
+for row in paper_rows:
+    value = watch_entry_pnl(row)
+    if value is not None:
+        watch_valid_pnl.append(value)
 
-watch_a.metric(
-    "Wins",
-    watch_wins,
-)
+a, b, c, d = st.columns(4)
 
-watch_b.metric(
-    "Losses",
-    watch_losses,
-)
+a.metric("Wins", watch_wins)
+b.metric("Losses", watch_losses)
 
-watch_c.metric(
+c.metric(
     "Win rate",
     (
         f"{watch_wins / watch_graded:.1%}"
@@ -1277,10 +908,7 @@ watch_c.metric(
     ),
 )
 
-watch_d.metric(
-    "Pending",
-    watch_pending,
-)
+d.metric("Pending", watch_pending)
 
 st.metric(
     "💵 Estimated Net Paper P&L",
@@ -1293,40 +921,28 @@ st.metric(
 
 for name, series, emoji in SERIES:
     market_rows = [
-        row
-        for row in paper_rows
+        row for row in paper_rows
         if watch_market_matches(
-            row,
-            name,
-            series,
+            row, name, series
         )
     ]
 
     wins = sum(
-        str(
-            row.get(
-                "status", ""
-            )
-        ).lower() == "win"
-        for row in market_rows
+        str(r.get("status", "")).lower() == "win"
+        for r in market_rows
     )
 
     losses = sum(
-        str(
-            row.get(
-                "status", ""
-            )
-        ).lower() == "loss"
-        for row in market_rows
+        str(r.get("status", "")).lower() == "loss"
+        for r in market_rows
     )
 
-    values = [
-        value
-        for row in market_rows
-        if (
-            value := watch_entry_pnl(row)
-        ) is not None
-    ]
+    values = []
+
+    for row in market_rows:
+        value = watch_entry_pnl(row)
+        if value is not None:
+            values.append(value)
 
     pnl_label = (
         f"Est. P&L ${sum(values):+.2f}"
@@ -1336,39 +952,32 @@ for name, series, emoji in SERIES:
 
     st.caption(
         f"{emoji} {name}: "
-        f"{wins} W / {losses} L · "
-        f"{pnl_label}"
+        f"{wins} W / {losses} L · {pnl_label}"
     )
 
-with st.expander(
-    "📜 WATCH paper trading history"
-):
+with st.expander("📜 WATCH paper trading history"):
     if paper_rows:
         st.dataframe(
             paper_rows,
             hide_index=True,
             width="stretch",
         )
-
     else:
         st.caption(
             "No WATCH paper entries recorded yet."
         )
 
 st.caption(
-    "⚠️ WATCH history may include "
-    "incorrectly graded BELOW entries "
-    "from the existing paper_tracker.py. "
-    "These totals are provisional until "
-    "that tracker is corrected and "
-    "historical records are regraded. "
-    "Paper P&L does not imply actual fills "
-    "or executable profit."
+    "⚠️ WATCH historical totals are provisional. "
+    "The existing paper_tracker.py may have "
+    "incorrectly graded BELOW entries. "
+    "Historical entries must be regraded before "
+    "relying on these P&L estimates."
 )
 
 
 # ============================================
-# STRONG LOCK PAPER SCOREBOARD
+# STRONG LOCK SCOREBOARD
 # ============================================
 
 scoreboard(
@@ -1379,8 +988,8 @@ scoreboard(
 
 st.caption(
     "Strong LOCK is experimental. "
-    "Paper results do not guarantee "
-    "executable fills or future profits."
+    "Paper results do not guarantee executable "
+    "fills or future profits."
 )
 
 
@@ -1388,49 +997,40 @@ st.caption(
 # FLIP RADAR
 # ============================================
 
-st.subheader(
-    "🚨 Flip Radar — All Markets"
-)
+st.subheader("🚨 Flip Radar — All Markets")
 
-events = (
-    st.session_state.radar_events
-)
+events = st.session_state.radar_events
 
 if events:
     for event in events[:10]:
-        local = (
-            event["time"]
-            .astimezone(CENTRAL)
-        )
+        local = event["time"].astimezone(CENTRAL)
 
         st.write(
-            f"**{event['market']} — "
-            f"{event['label']}** · "
+            f"**{event['market']} — {event['label']}** · "
             f"{event['move']:+.1f}¢ · "
             f"{local:%I:%M:%S %p}"
         )
-
 else:
     st.caption(
-        "No alerts yet. Keep the "
-        "dashboard open for several refreshes."
+        "No alerts yet. Keep the dashboard open "
+        "for several refreshes."
     )
 
 
 # ============================================
-# FOOTER AND REFRESH
+# FOOTER — SYNTAX ERROR FIXED
 # ============================================
 
 st.caption(
-    f"Last refresh: "
-    f"{datetime.now(CENTRAL):"
-    f"%b %d, %Y · %I:%M:%S %p %Z}"
+    "Last refresh: "
+    + datetime.now(CENTRAL).strftime(
+        "%b %d, %Y · %I:%M:%S %p %Z"
+    )
 )
 
 st.caption(
     "Read-only Kalshi API dashboard. "
-    "No trade execution. "
-    "Quotes may be delayed."
+    "No trade execution. Quotes may be delayed."
 )
 
 st_autorefresh(
