@@ -27,6 +27,7 @@ from dual_strong_lock import (
     from_secrets as dual_store_from_secrets,
     analyze as dual_analyze,
 )
+from dual_strong_lock_v2 import analyze as dual_v2_analyze
 from paper_tracker import (
     from_secrets as paper_store_from_secrets,
     grade_pending as paper_grade_pending,
@@ -196,6 +197,9 @@ for key, default in {
     "dual_monitor": {},
     "dual_monitor_seen": {},
     "dual_monitor_events": [],
+    "dual_v2_shadow_entries": {},
+    "dual_v2_monitor_events": [],
+    "dual_v2_monitor_seen": {},
 }.items():
     st.session_state.setdefault(key, default)
 
@@ -455,6 +459,7 @@ def active_markets():
             if market is not None:
                 results[series] = market
 
+
                 st.session_state[
                     "last_good_markets"
                 ][series] = market
@@ -684,6 +689,65 @@ def monitor_summary(series, stage):
 
 
 # ============================================================
+# DUAL STRONG LOCK 2.0 SHADOW MONITOR
+# ============================================================
+
+def v2_monitor_event(
+    name,
+    series,
+    ticker,
+    stage,
+    decision,
+    reason,
+    score=None,
+):
+    now = datetime.now(timezone.utc)
+
+    sample_key = (
+        ticker,
+        stage,
+        int(now.timestamp() // 5),
+    )
+
+    seen = st.session_state[
+        "dual_v2_monitor_seen"
+    ]
+
+    if sample_key in seen:
+        return
+
+    seen[sample_key] = True
+
+    if len(seen) > 3000:
+        seen.clear()
+        seen[sample_key] = True
+
+    events = st.session_state[
+        "dual_v2_monitor_events"
+    ]
+
+    events.insert(
+        0,
+        {
+            "Time": now.astimezone(
+                CENTRAL
+            ).strftime("%I:%M:%S %p"),
+            "Market": name,
+            "Ticker": ticker,
+            "Stage": (
+                "10m" if stage == "EARLY_10M"
+                else "5m"
+            ),
+            "Decision": decision,
+            "Score": score,
+            "Reason": str(reason),
+        },
+    )
+
+    del events[100:]
+
+
+# ============================================================
 # SIDEBAR
 # ============================================================
 
@@ -710,6 +774,8 @@ with st.sidebar:
         st.session_state["dual_monitor"] = {}
         st.session_state["dual_monitor_seen"] = {}
         st.session_state["dual_monitor_events"] = []
+        st.session_state["dual_v2_monitor_events"] = []
+        st.session_state["dual_v2_monitor_seen"] = {}
         st.rerun()
 
     st.caption("Read-only. No automatic trading.")
@@ -866,6 +932,7 @@ def update_history(ticker, name, mid):
         history.append(
             (now, mid, "YES midpoint")
         )
+
         del history[:-120]
 
     if len(history) < 3:
@@ -1165,6 +1232,91 @@ def dual_panel(
         )
 
 
+
+# ============================================================
+# DUAL STRONG LOCK 2.0 — SHADOW MODE
+# ============================================================
+
+def dual_v2_panel(name, series, ticker, market, close, verified):
+    """Evaluate 2.0 independently. Never writes to Supabase."""
+    st.markdown("**👑 Dual Strong LOCK 2.0 · SHADOW**")
+
+    if close is None:
+        st.caption("Waiting for contract close time")
+        return
+
+    seconds_left = (close - datetime.now(timezone.utc)).total_seconds()
+    history = st.session_state["quote_history"].get(ticker, [])
+    shadow_entries = st.session_state["dual_v2_shadow_entries"]
+    seen = st.session_state["dual_v2_monitor_seen"]
+    events = st.session_state["dual_v2_monitor_events"]
+
+    for stage, label, lower, upper in STAGES:
+        key = (ticker, stage)
+        saved = shadow_entries.get(key)
+        if saved:
+            st.caption(
+                f"{label}: SHADOW ENTER {saved['side']} · "
+                f"Ask {saved['entry_price'] * 100:.1f}¢ · "
+                f"Score {saved['score']:.1f}/100 · "
+                f"{saved['time']} Central · session-only"
+            )
+            continue
+
+        if seconds_left > upper:
+            st.caption(f"{label}: Awaiting window")
+            continue
+        if seconds_left < lower:
+            st.caption(f"{label}: Window passed · no shadow entry")
+            continue
+
+        try:
+            result = dual_v2_analyze(
+                market, history, seconds_left, verified
+            )
+        except Exception as exc:
+            st.caption(f"{label}: V2 evaluation unavailable: {exc}")
+            continue
+
+        decision = result.get("decision", "WAIT")
+        reason = str(result.get("reason", "Conditions not met"))
+        now = datetime.now(timezone.utc)
+        sample_key = (ticker, stage, int(now.timestamp() // 5))
+        if sample_key not in seen:
+            seen[sample_key] = True
+            events.insert(0, {
+                "Time": now.astimezone(CENTRAL).strftime("%I:%M:%S %p"),
+                "Market": name,
+                "Ticker": ticker,
+                "Stage": label,
+                "Decision": decision,
+                "Reason": reason,
+            })
+            del events[100:]
+            if len(seen) > 3000:
+                seen.clear()
+
+        if decision == "ENTER":
+            entry_price = number(result.get("entry_price"))
+            if entry_price is None:
+                st.caption(f"{label}: WAIT · Missing executable entry ask")
+                continue
+            shadow_entries[key] = {
+                "ticker": ticker,
+                "stage": stage,
+                "market": name,
+                "side": result.get("side", "—"),
+                "entry_price": entry_price,
+                "score": number(result.get("score")) or 0.0,
+                "observed_at": now.isoformat(),
+                "time": now.astimezone(CENTRAL).strftime("%I:%M:%S %p"),
+                "reason": reason,
+            }
+            st.caption(f"{label}: SHADOW ENTER · {reason}")
+        else:
+            st.caption(f"{label}: WAIT · {reason}")
+
+
 # ============================================================
 # MARKET CARDS
 # ============================================================
@@ -1366,6 +1518,15 @@ def market_card(
         )
 
         dual_panel(
+            name,
+            series,
+            ticker,
+            market,
+            close,
+            verified,
+        )
+
+        dual_v2_panel(
             name,
             series,
             ticker,
@@ -1655,6 +1816,37 @@ with st.expander(
 
 
 # ============================================================
+# V2 SHADOW COMPARISON — SESSION ONLY
+# ============================================================
+
+st.markdown("### 👑 DUAL STRONG LOCK 2.0 · SHADOW MONITOR")
+st.caption(
+    "2.0 is evaluated alongside the original, with no trades or "
+    "Supabase writes. Entries and evaluations are session-only; "
+    "they reset if the Streamlit session restarts. "
+    "A signal score is not a calibrated probability."
+)
+shadow_entries = list(st.session_state["dual_v2_shadow_entries"].values())
+shadow_events = st.session_state["dual_v2_monitor_events"]
+sc1, sc2, sc3 = st.columns(3)
+sc1.metric("V2 shadow entries", len(shadow_entries))
+sc2.metric("V2 observed checks", len(shadow_events))
+sc3.metric(
+    "V2 ENTER checks",
+    sum(event["Decision"] == "ENTER" for event in shadow_events),
+)
+if shadow_entries:
+    st.dataframe(shadow_entries, hide_index=True, use_container_width=True)
+else:
+    st.caption("No V2 shadow entries yet. Keep preview open during entry windows.")
+with st.expander("📋 V2 shadow signal details", expanded=False):
+    if shadow_events:
+        st.dataframe(shadow_events[:50], hide_index=True, use_container_width=True)
+    else:
+        st.caption("Waiting for V2 entry-window evaluations.")
+
+
+# ============================================================
 # DATABASE DIAGNOSTICS
 # ============================================================
 
@@ -1939,3 +2131,6 @@ st_autorefresh(
     interval=15000,
     key="queens_edge_tracker_refresh",
 )
+
+
+
