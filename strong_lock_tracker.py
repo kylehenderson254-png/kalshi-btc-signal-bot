@@ -1,55 +1,98 @@
 
-"""QUEEN'S EDGE | 254 — read-only Strong LOCK paper tracker."""
+"""Strong LOCK paper-only tracker.
+
+Compatible with QUEEN'S EDGE | 254 app.py.
+No Kalshi account access and no real orders.
+"""
 
 from datetime import datetime, timezone
 import requests
 
+
 API = "https://api.elections.kalshi.com/trade-api/v2"
+TABLE = "strong_lock_calls"
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def as_float(value):
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def normalized_side(value):
+    text = str(value or "").strip().upper()
+
+    if text in ("ABOVE", "YES", "UP", "ABOVE TARGET"):
+        return "yes"
+
+    if text in ("BELOW", "NO", "DOWN", "BELOW TARGET"):
+        return "no"
+
+    return None
+
+
+def market_quote(market, side, kind):
+    dollars = as_float(
+        market.get(f"{side}_{kind}_dollars")
+    )
+
+    if dollars is not None:
+        return dollars
+
+    cents = as_float(
+        market.get(f"{side}_{kind}")
+    )
+
+    if cents is not None:
+        return cents / 100
+
+    return None
 
 
 class StrongLockStore:
     def __init__(self, url, key):
-        self.endpoint = (
-            url.rstrip("/") + "/rest/v1/strong_lock_entries"
-        )
-        self.headers = {
-            "apikey": key,
-            "Authorization": "Bearer " + key,
-        }
+        self.url = url.rstrip("/")
+        self.key = key
 
-    def request(self, method, **kwargs):
+    def request(self, method, params=None, payload=None):
         headers = {
-            **self.headers,
-            **kwargs.pop("headers", {}),
+            "apikey": self.key,
+            "Authorization": f"Bearer {self.key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
         }
 
         response = requests.request(
             method,
-            self.endpoint,
+            f"{self.url}/rest/v1/{TABLE}",
             headers=headers,
+            params=params,
+            json=payload,
             timeout=12,
-            **kwargs,
         )
 
         if not response.ok:
-            try:
-                details = response.json()
-                message = (
-                    details.get("message")
-                    or details.get("details")
-                    or str(details)
-                )
-                code = details.get("code", "")
-            except ValueError:
-                message = response.text[:400]
-                code = ""
+            detail = response.text[:1000]
 
             raise RuntimeError(
-                f"Strong LOCK database error "
-                f"{response.status_code} {code}: {message}"
+                f"Strong LOCK Supabase HTTP "
+                f"{response.status_code}: {detail}"
             )
 
-        return response.json() if response.content else []
+        if not response.content:
+            return []
+
+        try:
+            return response.json()
+        except ValueError:
+            return []
 
     def all(self):
         return self.request(
@@ -57,74 +100,94 @@ class StrongLockStore:
             params={
                 "select": "*",
                 "order": "observed_at.desc",
-                "limit": "1000",
+                "limit": 1000,
             },
         )
 
-    def record_once(self, row):
-        allowed = (
-            "ticker",
-            "market_name",
-            "series_ticker",
-            "side",
-            "decision",
-            "entry_price",
-            "yes_midpoint",
-            "close_time",
-            "status",
-            "observed_at",
+    def record_once(self, entry):
+        ticker = entry.get("ticker")
+
+        if not ticker:
+            raise ValueError(
+                "Strong LOCK entry is missing ticker"
+            )
+
+        # Check for an existing paper entry first.
+        existing = self.request(
+            "GET",
+            params={
+                "select": "ticker",
+                "ticker": f"eq.{ticker}",
+                "limit": 1,
+            },
         )
+
+        if existing:
+            return {
+                "saved": True,
+                "created": False,
+                "message": "Already saved",
+                "ticker": ticker,
+            }
 
         payload = {
-            key: row[key]
-            for key in allowed
-            if key in row
+            "ticker": ticker,
+            "market_name": entry.get("market_name"),
+            "series_ticker": entry.get("series_ticker"),
+            "side": entry.get("side"),
+            "decision": "ENTER",
+            "entry_price": entry.get("entry_price"),
+            "yes_midpoint": entry.get("yes_midpoint"),
+            "close_time": entry.get("close_time"),
+            "status": "pending",
+            "observed_at": (
+                entry.get("observed_at")
+                or utc_now()
+            ),
         }
 
-        payload.setdefault(
-            "observed_at",
-            datetime.now(timezone.utc).isoformat(),
-        )
-        payload.setdefault("status", "pending")
-        payload.setdefault("decision", "ENTER")
-
-        self.request(
+        saved = self.request(
             "POST",
-            json=payload,
-            params={"on_conflict": "ticker"},
-            headers={
-                "Prefer":
-                "resolution=ignore-duplicates,return=minimal"
+            params={
+                "on_conflict": "ticker",
+            },
+            payload=payload,
+        )
+
+        # Verify the entry is actually present.
+        verified = self.request(
+            "GET",
+            params={
+                "select": "ticker",
+                "ticker": f"eq.{ticker}",
+                "limit": 1,
             },
         )
 
-    def settle(self, ticker, result, side):
-        result = str(result).lower()
-        side = str(side).upper()
+        if not verified:
+            raise RuntimeError(
+                "Supabase returned success, but "
+                "the Strong LOCK entry could not "
+                "be found afterward."
+            )
 
-        if (
-            result not in ("yes", "no")
-            or side not in ("ABOVE", "BELOW")
-        ):
-            return
+        return {
+            "saved": True,
+            "created": bool(saved),
+            "message": "Entry saved and verified",
+            "ticker": ticker,
+        }
 
-        won = (
-            (result == "yes" and side == "ABOVE")
-            or (result == "no" and side == "BELOW")
-        )
-
-        self.request(
+    def update_result(self, ticker, result, status):
+        return self.request(
             "PATCH",
             params={
-                "ticker": "eq." + ticker,
-                "decision": "eq.ENTER",
-                "status": "eq.pending",
+                "ticker": f"eq.{ticker}",
             },
-            json={
-                "status": "win" if won else "loss",
+            payload={
                 "official_result": result,
+                "status": status,
             },
-            headers={"Prefer": "return=minimal"},
         )
 
 
@@ -132,214 +195,202 @@ def from_secrets(secrets):
     url = secrets.get("SUPABASE_URL")
     key = secrets.get("SUPABASE_SERVICE_ROLE_KEY")
 
-    return (
-        StrongLockStore(url, key)
-        if url and key
-        else None
-    )
-
-
-def numeric(value):
-    try:
-        if value in (None, ""):
-            return None
-        return float(value)
-    except (TypeError, ValueError):
+    if not url or not key:
         return None
 
-
-def side_quote(market, side, kind):
-    prefix = "yes" if side == "ABOVE" else "no"
-
-    dollar_value = numeric(
-        market.get(f"{prefix}_{kind}_dollars")
-    )
-
-    if dollar_value is not None:
-        return dollar_value
-
-    cents = numeric(
-        market.get(f"{prefix}_{kind}")
-    )
-
-    return cents / 100 if cents is not None else None
+    return StrongLockStore(url, key)
 
 
-def evaluate(locked, market, history, verified, now=None):
-    """Experimental paper signal; no real orders."""
+def evaluate(locked, market, history, verified):
+    """Evaluate experimental Strong LOCK paper entry.
 
-    now = now or datetime.now(timezone.utc)
+    Returns:
+        decision, reason, entry_ask, strength
+    """
 
-    side = str(locked.get("call") or "").upper()
-    yes_mid = numeric(locked.get("yes_midpoint"))
     reasons = []
 
-    if side not in ("ABOVE", "BELOW") or not verified:
-        reasons.append("Contract direction unverified")
+    if not verified:
+        reasons.append("Contract direction not verified")
 
-    if yes_mid is None or not 0 <= yes_mid <= 1:
-        reasons.append("Locked YES midpoint unavailable")
-        confidence = 0.0
-    else:
-        confidence = (
-            yes_mid if side == "ABOVE"
-            else 1 - yes_mid
+    side = normalized_side(
+        locked.get("call")
+    )
+
+    if side is None:
+        reasons.append("Locked call side unavailable")
+
+    midpoint = as_float(
+        locked.get("yes_midpoint")
+    )
+
+    if midpoint is None:
+        reasons.append("Locked midpoint unavailable")
+
+    if reasons:
+        return "SKIP", "; ".join(reasons), None, 0.0
+
+    strength = (
+        midpoint
+        if side == "yes"
+        else 1.0 - midpoint
+    )
+
+    if strength < 0.70:
+        reasons.append(
+            "Locked quote strength below 70¢"
         )
 
-    if confidence < 0.70:
-        reasons.append("Locked quote strength below 70¢")
-
-    ask = (
-        side_quote(market, side, "ask")
-        if side in ("ABOVE", "BELOW")
-        else None
+    bid = market_quote(
+        market, side, "bid"
     )
 
-    bid = (
-        side_quote(market, side, "bid")
-        if side in ("ABOVE", "BELOW")
-        else None
+    ask = market_quote(
+        market, side, "ask"
     )
 
-    if not (
-        ask is not None
-        and bid is not None
-        and 0 < bid <= ask < 1
+    if (
+        bid is None
+        or ask is None
+        or not (0 <= bid <= ask <= 1)
     ):
-        reasons.append("Valid side bid/ask unavailable")
-    else:
-        if ask > 0.80:
-            reasons.append("Entry ask exceeds 80¢ cap")
+        reasons.append(
+            "Valid side bid/ask unavailable"
+        )
+        return (
+            "SKIP",
+            "; ".join(reasons),
+            None,
+            strength,
+        )
 
-        if ask - bid > 0.04:
-            reasons.append("Spread exceeds 4¢")
+    if ask > 0.80:
+        reasons.append(
+            "Entry ask exceeds 80¢ cap"
+        )
 
-        if ask + 0.02 >= 1:
-            reasons.append("No upside after assumed 2¢ fee")
+    if ask - bid > 0.04:
+        reasons.append(
+            "Bid/ask spread exceeds 4¢"
+        )
 
-    if not history or len(history) < 3:
-        reasons.append("Insufficient live quote history")
-    else:
-        latest_time = history[-1][0]
-        moves = []
+    # A winning paper contract pays $1.
+    # Assume a flat 2¢ fee.
+    if 1.0 - ask - 0.02 <= 0:
+        reasons.append(
+            "No upside after assumed 2¢ fee"
+        )
 
-        for i in range(1, len(history)):
-            previous = history[i - 1]
-            current = history[i]
+    # history entries:
+    # (datetime, yes_midpoint, source)
+    values = []
 
-            try:
-                age = (
-                    latest_time - current[0]
-                ).total_seconds()
+    for item in history[-5:]:
+        if len(item) >= 2:
+            value = as_float(item[1])
+            if value is not None:
+                values.append(value)
 
-                if age > 90:
-                    continue
+    momentum_confirmed = False
 
-                delta = (
-                    float(current[1])
-                    - float(previous[1])
-                )
+    if len(values) >= 3:
+        first = values[-2] - values[-3]
+        second = values[-1] - values[-2]
 
-                if delta >= 0.005:
-                    moves.append(1)
-                elif delta <= -0.005:
-                    moves.append(-1)
-
-            except (
-                TypeError,
-                ValueError,
-                IndexError,
-            ):
-                continue
-
-        if side == "ABOVE":
-            required = [1, 1]
-        elif side == "BELOW":
-            required = [-1, -1]
+        if side == "yes":
+            momentum_confirmed = (
+                first > 0 and second > 0
+            )
         else:
-            required = []
+            momentum_confirmed = (
+                first < 0 and second < 0
+            )
 
-        if moves[-2:] != required:
-            reasons.append("Recent momentum not confirmed")
+    if not momentum_confirmed:
+        reasons.append(
+            "Recent momentum not confirmed"
+        )
 
-    decision = "SKIP" if reasons else "ENTER"
+    if reasons:
+        return (
+            "SKIP",
+            "; ".join(reasons),
+            ask,
+            strength,
+        )
 
-    explanation = (
-        "; ".join(reasons)
-        if reasons
-        else "All experimental filters passed"
+    return (
+        "ENTER",
+        "All experimental filters passed",
+        ask,
+        strength,
     )
 
-    return decision, explanation, ask, confidence
+
+def fetch_official_result(ticker):
+    response = requests.get(
+        f"{API}/markets/{ticker}",
+        timeout=10,
+    )
+
+    response.raise_for_status()
+
+    market = response.json().get(
+        "market", {}
+    )
+
+    result = str(
+        market.get("result") or ""
+    ).lower()
+
+    if result in ("yes", "no"):
+        return result
+
+    return None
 
 
-def grade_pending(store, rows, max_checks=8):
-    now = datetime.now(timezone.utc)
-    checks = 0
+def grade_pending(store, rows):
+    """Grade saved paper entries using Kalshi results."""
 
     for row in rows:
-        if checks >= max_checks:
-            break
-
-        if (
-            row.get("decision") != "ENTER"
-            or row.get("status") != "pending"
-        ):
+        if str(
+            row.get("status") or ""
+        ).lower() != "pending":
             continue
 
         ticker = row.get("ticker")
-        side = str(row.get("side") or "").upper()
 
-        if (
-            not ticker
-            or side not in ("ABOVE", "BELOW")
-        ):
+        if not ticker:
             continue
 
         try:
-            close = datetime.fromisoformat(
-                str(row.get("close_time")).replace(
-                    "Z", "+00:00"
-                )
+            official = fetch_official_result(
+                ticker
             )
 
-            if close.tzinfo is None:
-                close = close.replace(
-                    tzinfo=timezone.utc
-                )
-
-            if close > now:
+            if official is None:
                 continue
 
-            checks += 1
-
-            response = requests.get(
-                f"{API}/markets/{ticker}",
-                timeout=12,
-            )
-            response.raise_for_status()
-
-            market = response.json().get(
-                "market", {}
+            side = normalized_side(
+                row.get("side")
             )
 
-            status = str(
-                market.get("status") or ""
-            ).lower()
+            if side is None:
+                continue
 
-            result = str(
-                market.get("result") or ""
-            ).lower()
+            status = (
+                "win"
+                if side == official
+                else "loss"
+            )
 
-            if (
-                status in ("settled", "finalized")
-                and result in ("yes", "no")
-            ):
-                store.settle(ticker, result, side)
+            store.update_result(
+                ticker,
+                official,
+                status,
+            )
 
-        except (
-            requests.RequestException,
-            ValueError,
-            TypeError,
-        ):
+        except requests.RequestException:
+            # Temporary Kalshi API failure:
+            # leave entry pending.
             continue
