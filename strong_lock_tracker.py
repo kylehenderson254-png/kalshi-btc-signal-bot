@@ -10,7 +10,7 @@ import requests
 
 
 API = "https://api.elections.kalshi.com/trade-api/v2"
-TABLE = "strong_lock_calls"
+TABLE = "strong_lock_entries"
 
 
 def utc_now():
