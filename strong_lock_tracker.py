@@ -1,9 +1,5 @@
 
-"""QUEEN'S EDGE | 254 — Strong LOCK paper-entry tracker.
-
-Read-only Kalshi analysis. No real orders.
-Conservative experimental filters, not a proven trading edge.
-"""
+"""QUEEN'S EDGE | 254 — read-only Strong LOCK paper tracker."""
 
 from datetime import datetime, timezone
 import requests
@@ -26,6 +22,7 @@ class StrongLockStore:
             **self.headers,
             **kwargs.pop("headers", {}),
         }
+
         response = requests.request(
             method,
             self.endpoint,
@@ -33,7 +30,25 @@ class StrongLockStore:
             timeout=12,
             **kwargs,
         )
-        response.raise_for_status()
+
+        if not response.ok:
+            try:
+                details = response.json()
+                message = (
+                    details.get("message")
+                    or details.get("details")
+                    or str(details)
+                )
+                code = details.get("code", "")
+            except ValueError:
+                message = response.text[:400]
+                code = ""
+
+            raise RuntimeError(
+                f"Strong LOCK database error "
+                f"{response.status_code} {code}: {message}"
+            )
+
         return response.json() if response.content else []
 
     def all(self):
@@ -47,9 +62,35 @@ class StrongLockStore:
         )
 
     def record_once(self, row):
+        allowed = (
+            "ticker",
+            "market_name",
+            "series_ticker",
+            "side",
+            "decision",
+            "entry_price",
+            "yes_midpoint",
+            "close_time",
+            "status",
+            "observed_at",
+        )
+
+        payload = {
+            key: row[key]
+            for key in allowed
+            if key in row
+        }
+
+        payload.setdefault(
+            "observed_at",
+            datetime.now(timezone.utc).isoformat(),
+        )
+        payload.setdefault("status", "pending")
+        payload.setdefault("decision", "ENTER")
+
         self.request(
             "POST",
-            json=row,
+            json=payload,
             params={"on_conflict": "ticker"},
             headers={
                 "Prefer":
@@ -58,10 +99,20 @@ class StrongLockStore:
         )
 
     def settle(self, ticker, result, side):
+        result = str(result).lower()
+        side = str(side).upper()
+
+        if (
+            result not in ("yes", "no")
+            or side not in ("ABOVE", "BELOW")
+        ):
+            return
+
         won = (
             (result == "yes" and side == "ABOVE")
             or (result == "no" and side == "BELOW")
         )
+
         self.request(
             "PATCH",
             params={
@@ -80,9 +131,12 @@ class StrongLockStore:
 def from_secrets(secrets):
     url = secrets.get("SUPABASE_URL")
     key = secrets.get("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
-        return None
-    return StrongLockStore(url, key)
+
+    return (
+        StrongLockStore(url, key)
+        if url and key
+        else None
+    )
 
 
 def numeric(value):
@@ -95,38 +149,25 @@ def numeric(value):
 
 
 def side_quote(market, side, kind):
-    """Prefer Kalshi decimal-dollar fields.
-
-    Legacy integer-cent fields are converted to dollars.
-    """
     prefix = "yes" if side == "ABOVE" else "no"
-    dollar_field = f"{prefix}_{kind}_dollars"
-    cent_field = f"{prefix}_{kind}"
 
-    dollar_value = numeric(market.get(dollar_field))
+    dollar_value = numeric(
+        market.get(f"{prefix}_{kind}_dollars")
+    )
+
     if dollar_value is not None:
         return dollar_value
 
-    cent_value = numeric(market.get(cent_field))
-    if cent_value is not None:
-        return cent_value / 100
+    cents = numeric(
+        market.get(f"{prefix}_{kind}")
+    )
 
-    return None
+    return cents / 100 if cents is not None else None
 
 
 def evaluate(locked, market, history, verified, now=None):
-    """Return decision, explanation, ask, quote strength.
+    """Experimental paper signal; no real orders."""
 
-    Filters:
-    - Verified YES = ABOVE settlement mapping
-    - Locked-side quote strength >= 70 cents
-    - Entry ask <= 80 cents
-    - Bid/ask spread <= 4 cents
-    - Two consecutive confirming momentum moves
-    - Positive gross payout room after assumed 2-cent fee
-
-    ENTER means an experimental paper signal, not an order.
-    """
     now = now or datetime.now(timezone.utc)
 
     side = str(locked.get("call") or "").upper()
@@ -146,50 +187,38 @@ def evaluate(locked, market, history, verified, now=None):
         )
 
     if confidence < 0.70:
-        reasons.append(
-            "Locked quote strength below 70¢"
-        )
+        reasons.append("Locked quote strength below 70¢")
 
-    ask = None
-    bid = None
+    ask = (
+        side_quote(market, side, "ask")
+        if side in ("ABOVE", "BELOW")
+        else None
+    )
 
-    if side in ("ABOVE", "BELOW"):
-        ask = side_quote(market, side, "ask")
-        bid = side_quote(market, side, "bid")
+    bid = (
+        side_quote(market, side, "bid")
+        if side in ("ABOVE", "BELOW")
+        else None
+    )
 
-    valid_quotes = (
+    if not (
         ask is not None
         and bid is not None
         and 0 < bid <= ask < 1
-    )
-
-    if not valid_quotes:
-        reasons.append(
-            "Valid side bid/ask unavailable"
-        )
+    ):
+        reasons.append("Valid side bid/ask unavailable")
     else:
         if ask > 0.80:
-            reasons.append(
-                "Entry ask exceeds 80¢ cap"
-            )
+            reasons.append("Entry ask exceeds 80¢ cap")
 
         if ask - bid > 0.04:
-            reasons.append(
-                "Spread exceeds 4¢"
-            )
+            reasons.append("Spread exceeds 4¢")
 
         if ask + 0.02 >= 1:
-            reasons.append(
-                "No upside after assumed 2¢ fee"
-            )
+            reasons.append("No upside after assumed 2¢ fee")
 
-    # History stores YES midpoints.
-    # BELOW momentum must be evaluated in the
-    # opposite direction from ABOVE momentum.
     if not history or len(history) < 3:
-        reasons.append(
-            "Insufficient live quote history"
-        )
+        reasons.append("Insufficient live quote history")
     else:
         latest_time = history[-1][0]
         moves = []
@@ -216,7 +245,11 @@ def evaluate(locked, market, history, verified, now=None):
                 elif delta <= -0.005:
                     moves.append(-1)
 
-            except (TypeError, ValueError, IndexError):
+            except (
+                TypeError,
+                ValueError,
+                IndexError,
+            ):
                 continue
 
         if side == "ABOVE":
@@ -227,9 +260,7 @@ def evaluate(locked, market, history, verified, now=None):
             required = []
 
         if moves[-2:] != required:
-            reasons.append(
-                "Recent momentum not confirmed"
-            )
+            reasons.append("Recent momentum not confirmed")
 
     decision = "SKIP" if reasons else "ENTER"
 
@@ -243,7 +274,6 @@ def evaluate(locked, market, history, verified, now=None):
 
 
 def grade_pending(store, rows, max_checks=8):
-    """Grade pending paper entries using official Kalshi results."""
     now = datetime.now(timezone.utc)
     checks = 0
 
@@ -251,22 +281,26 @@ def grade_pending(store, rows, max_checks=8):
         if checks >= max_checks:
             break
 
-        if row.get("decision") != "ENTER":
-            continue
-
-        if row.get("status") != "pending":
+        if (
+            row.get("decision") != "ENTER"
+            or row.get("status") != "pending"
+        ):
             continue
 
         ticker = row.get("ticker")
-        side = row.get("side")
+        side = str(row.get("side") or "").upper()
 
-        if not ticker or side not in ("ABOVE", "BELOW"):
+        if (
+            not ticker
+            or side not in ("ABOVE", "BELOW")
+        ):
             continue
 
         try:
-            raw_close = row.get("close_time")
             close = datetime.fromisoformat(
-                str(raw_close).replace("Z", "+00:00")
+                str(row.get("close_time")).replace(
+                    "Z", "+00:00"
+                )
             )
 
             if close.tzinfo is None:
@@ -301,11 +335,7 @@ def grade_pending(store, rows, max_checks=8):
                 status in ("settled", "finalized")
                 and result in ("yes", "no")
             ):
-                store.settle(
-                    ticker,
-                    result,
-                    side,
-                )
+                store.settle(ticker, result, side)
 
         except (
             requests.RequestException,
