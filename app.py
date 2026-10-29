@@ -2722,6 +2722,59 @@ with diagnostics_tab:
     )
 
 
+# ============================================================
+# QUEEN'S EDGE | 254 — COMPACT V3 VISUAL FIX
+# Banner clock alignment + dashboard readability
+# No changes to strategy logic or Supabase tracking
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+    /* Cover the original printed banner clock */
+    .queen-live-clock {
+        left: 0% !important;
+        top: 43% !important;
+        width: 16% !important;
+        height: 57% !important;
+        z-index: 10 !important;
+        background: #0a0b1c !important;
+        color: #f5edff !important;
+    }
+
+    /* Improve dashboard text visibility */
+    .stApp {
+        color: #f5edff !important;
+    }
+
+    .stApp p,
+    .stApp label,
+    .stApp [data-testid="stCaptionContainer"] {
+        color: #d8c8ed !important;
+    }
+
+    .stApp h1,
+    .stApp h2,
+    .stApp h3 {
+        color: #ead6ff !important;
+    }
+
+    .quote-box.above {
+        color: #8affc8 !important;
+    }
+
+    .quote-box.below {
+        color: #ffb0c1 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+
+
+
 
 
 
