@@ -88,10 +88,10 @@ st.markdown(
 
     .block-container {
         max-width: 1800px;
-        padding-top: 0.8rem;
+        padding-top: 0.35rem;
         padding-left: 1.5rem;
         padding-right: 1.5rem;
-        padding-bottom: 2rem;
+        padding-bottom: 1rem;
     }
 
     h1, h2, h3 {
@@ -118,6 +118,20 @@ st.markdown(
         margin-bottom: .5rem;
     }
 
+    .queen-banner-wrap {position:relative; width:100%;}
+    .queen-live-clock {
+        position:absolute; left:1.8%; top:50%; width:14%; height:42%;
+        background:#0a0b1c; border:1px solid #8058d4; border-radius:12px;
+        display:flex; flex-direction:column; align-items:center; justify-content:center;
+        gap:3px; color:#e9ddff; font-size:clamp(8px,1.05vw,17px);
+        text-align:center; box-shadow:0 0 12px #231145;
+    }
+    .queen-live-clock strong {font-size:clamp(10px,1.35vw,23px);}
+    .queen-live-indicator {color:#41e8bb; font-weight:800;}
+    @media(max-width:700px){
+        .queen-live-clock {top:51%;height:40%;width:19%;left:1%;gap:0;font-size:7px;border-radius:5px;}
+        .queen-live-clock strong {font-size:9px;}
+    }
     .queen-banner {
         width: 100%;
         height: auto;
@@ -900,10 +914,19 @@ if banner.exists():
         banner.read_bytes()
     ).decode("ascii")
 
+    now_ct = datetime.now(CENTRAL)
+    date_ct = now_ct.strftime("%a, %b %d, %Y")
+    time_ct = now_ct.strftime("%I:%M %p CT").lstrip("0")
     st.markdown(
+        '<div class="queen-banner-wrap">'
         f'<img class="queen-banner" '
         f'src="data:image/jpeg;base64,{encoded}" '
-        f'alt="QUEENS EDGE banner">',
+        f'alt="QUEENS EDGE banner">'
+        '<div class="queen-live-clock">'
+        '<span class="queen-live-indicator">◉ LIVE · CENTRAL</span>'
+        f'<span>{date_ct}</span>'
+        f'<strong>{time_ct}</strong>'
+        '</div></div>',
         unsafe_allow_html=True,
     )
 else:
@@ -2079,595 +2102,614 @@ all_rows = (
 )
 
 
-# ============================================================
-# PERFORMANCE CENTER
-# ============================================================
-
-st.divider()
-
-st.header("📊 QUEEN'S EDGE PERFORMANCE CENTER")
-
-st.caption(
-    "Read-only strategy tracking. "
-    "Each strategy entry is counted separately. "
-    "Paper P&L is hypothetical, assumes one "
-    "contract per priced entry, and uses an "
-    "estimated 2¢ fee per contract."
+# Compact Bitcoin-only workspace. Strategies above remain unchanged.
+overview_tab, history_tab, diagnostics_tab = st.tabs(
+    ["📊 Overview", "📚 History", "🔎 Diagnostics"]
 )
 
-total_wins, total_losses, total_pending, total_rate = (
-    counts(all_rows)
-)
+with overview_tab:
+    # ============================================================
+    # PERFORMANCE CENTER
+    # ============================================================
 
-total_pnl, total_priced = paper_pnl(
-    all_rows
-)
+    st.divider()
 
-overall_columns = st.columns(5)
+    st.header("📊 QUEEN'S EDGE PERFORMANCE CENTER")
 
-overall_columns[0].metric(
-    "Wins",
-    total_wins,
-)
-
-overall_columns[1].metric(
-    "Losses",
-    total_losses,
-)
-
-overall_columns[2].metric(
-    "Win Rate",
-    f"{total_rate:.1f}%",
-)
-
-overall_columns[3].metric(
-    "Pending",
-    total_pending,
-)
-
-overall_columns[4].metric(
-    "Paper P&L",
-    f"${total_pnl:+.2f}",
-)
-
-st.caption(
-    f"Paper P&L includes {total_priced} "
-    "graded entries with usable entry prices."
-)
-
-
-# ============================================================
-# STRATEGY SCOREBOARD
-# ============================================================
-
-st.subheader("🏆 Strategy Scoreboard")
-
-scoreboard = []
-
-for strategy_name, strategy_rows in performance_groups:
-    wins, losses, pending, rate = counts(
-        strategy_rows
+    st.caption(
+        "Read-only strategy tracking. "
+        "Each strategy entry is counted separately. "
+        "Paper P&L is hypothetical, assumes one "
+        "contract per priced entry, and uses an "
+        "estimated 2¢ fee per contract."
     )
 
-    pnl, priced = paper_pnl(
-        strategy_rows
+    total_wins, total_losses, total_pending, total_rate = (
+        counts(all_rows)
     )
 
-    scoreboard.append(
-        {
-            "Strategy": strategy_name,
-            "Entries": len(strategy_rows),
-            "Wins": wins,
-            "Losses": losses,
-            "Pending": pending,
-            "Win Rate": f"{rate:.1f}%",
-            "Paper P&L": f"${pnl:+.2f}",
-            "Priced": priced,
-        }
+    total_pnl, total_priced = paper_pnl(
+        all_rows
     )
 
-st.dataframe(
-    scoreboard,
-    use_container_width=True,
-    hide_index=True,
-)
+    overall_columns = st.columns(5)
+
+    overall_columns[0].metric(
+        "Wins",
+        total_wins,
+    )
+
+    overall_columns[1].metric(
+        "Losses",
+        total_losses,
+    )
+
+    overall_columns[2].metric(
+        "Win Rate",
+        f"{total_rate:.1f}%",
+    )
+
+    overall_columns[3].metric(
+        "Pending",
+        total_pending,
+    )
+
+    overall_columns[4].metric(
+        "Paper P&L",
+        f"${total_pnl:+.2f}",
+    )
+
+    st.caption(
+        f"Paper P&L includes {total_priced} "
+        "graded entries with usable entry prices."
+    )
 
 
-# ============================================================
-# DUAL STRONG LOCK MONITOR
-# ============================================================
 
-st.divider()
+    # ============================================================
+    # STRATEGY SCOREBOARD
+    # ============================================================
 
-st.header("🔐 Dual Strong LOCK Signal Monitor")
+    st.subheader("🏆 Strategy Scoreboard")
 
-st.caption(
-    "Diagnostic sampling of strategy evaluations. "
-    "Checks are not the same as unique contracts."
-)
+    scoreboard = []
 
-dual_monitor_rows = []
-
-for market_name, series, emoji in SERIES:
-    for stage in (
-        "EARLY_10M",
-        "FINAL_5M",
-    ):
-        summary = monitor_summary(
-            series, stage
+    for strategy_name, strategy_rows in performance_groups:
+        wins, losses, pending, rate = counts(
+            strategy_rows
         )
 
-        dual_monitor_rows.append(
+        pnl, priced = paper_pnl(
+            strategy_rows
+        )
+
+        scoreboard.append(
             {
-                "Market": (
-                    f"{emoji} {market_name}"
-                ),
-                **summary,
+                "Strategy": strategy_name,
+                "Entries": len(strategy_rows),
+                "Wins": wins,
+                "Losses": losses,
+                "Pending": pending,
+                "Win Rate": f"{rate:.1f}%",
+                "Paper P&L": f"${pnl:+.2f}",
+                "Priced": priced,
             }
         )
 
-st.dataframe(
-    dual_monitor_rows,
-    use_container_width=True,
-    hide_index=True,
-)
+    st.dataframe(
+        scoreboard,
+        use_container_width=True,
+        hide_index=True,
+    )
 
-dual_events = [
-    e for e in st.session_state.get("dual_monitor_events", [])
-    if e.get("Market") == "Bitcoin"
-]
 
-with st.expander(
-    "📋 Recent Dual Strong LOCK evaluations"
-):
-    if dual_events:
+
+    # ============================================================
+    # DUAL STRONG LOCK V2 SHADOW PERFORMANCE
+    # ============================================================
+
+    st.divider()
+
+    st.header("👑 Dual Strong LOCK 2.0 · SHADOW")
+
+    st.caption(
+        "V2 is a separate experimental paper-only "
+        "strategy. Entries are stored in Supabase "
+        "when the database is connected. "
+        "Official Kalshi results determine "
+        "WIN or LOSS."
+    )
+
+    v2_wins, v2_losses, v2_pending, v2_rate = (
+        counts(v2_rows)
+    )
+
+    v2_pnl, v2_priced = paper_pnl(
+        v2_rows
+    )
+
+    v2_columns = st.columns(5)
+
+    v2_columns[0].metric(
+        "V2 Entries",
+        len(v2_rows),
+    )
+
+    v2_columns[1].metric(
+        "V2 Wins",
+        v2_wins,
+    )
+
+    v2_columns[2].metric(
+        "V2 Losses",
+        v2_losses,
+    )
+
+    v2_columns[3].metric(
+        "V2 Win Rate",
+        f"{v2_rate:.1f}%",
+    )
+
+    v2_columns[4].metric(
+        "V2 Paper P&L",
+        f"${v2_pnl:+.2f}",
+    )
+
+    st.caption(
+        f"V2 pending settlement: {v2_pending} "
+        f"· Priced graded entries: {v2_priced}"
+    )
+
+    if v2_store is None:
+        st.warning(
+            "V2 Supabase storage is unavailable. "
+            "Session-only signals will not survive "
+            "an application restart unless saved."
+        )
+    else:
+        st.success(
+            "V2 Supabase tracker connected."
+        )
+
+
+
+    # ============================================================
+    # V2 STAGE BREAKDOWN
+    # ============================================================
+
+    st.subheader("⏱️ V2 10-Minute vs 5-Minute")
+
+    v2_stage_table = []
+
+    for stage, label in (
+        ("EARLY_10M", "10-Minute Early"),
+        ("FINAL_5M", "5-Minute Final"),
+    ):
+        stage_rows = [
+            row for row in v2_rows
+            if row.get("stage") == stage
+        ]
+
+        wins, losses, pending, rate = counts(
+            stage_rows
+        )
+
+        pnl, priced = paper_pnl(
+            stage_rows
+        )
+
+        v2_stage_table.append(
+            {
+                "Stage": label,
+                "Entries": len(stage_rows),
+                "Wins": wins,
+                "Losses": losses,
+                "Pending": pending,
+                "Win Rate": f"{rate:.1f}%",
+                "Paper P&L": f"${pnl:+.2f}",
+            }
+        )
+
+    st.dataframe(
+        v2_stage_table,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+
+with history_tab:
+    # ============================================================
+    # PERMANENT V2 ENTRY HISTORY
+    # ============================================================
+
+    st.subheader("💾 Permanent V2 Entry History")
+
+    if v2_rows:
+        v2_history = history_table(
+            v2_rows,
+            "Dual Strong LOCK 2.0",
+        )
+
         st.dataframe(
-            dual_events[:50],
+            v2_history,
             use_container_width=True,
             hide_index=True,
         )
     else:
         st.info(
-            "No Dual Strong LOCK evaluations "
-            "recorded in this session yet."
+            "No permanent V2 entries recorded yet. "
+            "A qualifying signal must occur while "
+            "the app is evaluating its entry window."
         )
 
 
-# ============================================================
-# DUAL STRONG LOCK V2 SHADOW PERFORMANCE
-# ============================================================
 
-st.divider()
+    # ============================================================
+    # FULL TRACKER HISTORY
+    # ============================================================
 
-st.header("👑 Dual Strong LOCK 2.0 · SHADOW")
+    st.divider()
 
-st.caption(
-    "V2 is a separate experimental paper-only "
-    "strategy. Entries are stored in Supabase "
-    "when the database is connected. "
-    "Official Kalshi results determine "
-    "WIN or LOSS."
-)
+    st.header("📚 Complete Strategy History")
 
-v2_wins, v2_losses, v2_pending, v2_rate = (
-    counts(v2_rows)
-)
+    all_history = []
 
-v2_pnl, v2_priced = paper_pnl(
-    v2_rows
-)
+    for strategy_name, strategy_rows in performance_groups:
+        all_history.extend(
+            history_table(
+                strategy_rows,
+                strategy_name,
+            )
+        )
 
-v2_columns = st.columns(5)
+    if all_history:
+        st.dataframe(
+            all_history,
+            use_container_width=True,
+            hide_index=True,
+        )
 
-v2_columns[0].metric(
-    "V2 Entries",
-    len(v2_rows),
-)
+        st.download_button(
+            "📥 Export Tracker History (CSV)",
+            data=pd.DataFrame(
+                all_history
+            ).to_csv(index=False),
+            file_name=(
+                "queens_edge_254_history.csv"
+            ),
+            mime="text/csv",
+        )
+    else:
+        st.info(
+            "No strategy history is available yet."
+        )
 
-v2_columns[1].metric(
-    "V2 Wins",
-    v2_wins,
-)
 
-v2_columns[2].metric(
-    "V2 Losses",
-    v2_losses,
-)
 
-v2_columns[3].metric(
-    "V2 Win Rate",
-    f"{v2_rate:.1f}%",
-)
+    # ============================================================
+    # OFFICIAL SETTLEMENT SUMMARY
+    # ============================================================
 
-v2_columns[4].metric(
-    "V2 Paper P&L",
-    f"${v2_pnl:+.2f}",
-)
+    st.divider()
 
-st.caption(
-    f"V2 pending settlement: {v2_pending} "
-    f"· Priced graded entries: {v2_priced}"
-)
+    st.header("🏁 Official Settlement Summary")
 
-if v2_store is None:
-    st.warning(
-        "V2 Supabase storage is unavailable. "
-        "Session-only signals will not survive "
-        "an application restart unless saved."
+    settlement_rows = []
+
+    for series, label in (
+        ("KXBTC15M", "₿ Bitcoin"),
+    ):
+        try:
+            recent = fetch_recent(series)
+
+            for market in recent:
+                result = str(
+                    market.get("result")
+                    or ""
+                ).upper()
+
+                settlement_rows.append(
+                    {
+                        "Market": label,
+                        "Ticker": market.get(
+                            "ticker", "—"
+                        ),
+                        "Target": target(market),
+                        "Result": result,
+                        "Closed": display_time(
+                            market.get("close_time")
+                        ),
+                    }
+                )
+
+        except Exception as exc:
+            st.caption(
+                f"{label} settlements unavailable: {exc}"
+            )
+
+    if settlement_rows:
+        st.dataframe(
+            settlement_rows,
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.caption(
+            "Official settlement history "
+            "is temporarily unavailable."
+        )
+
+
+
+with diagnostics_tab:
+    # ============================================================
+    # DUAL STRONG LOCK MONITOR
+    # ============================================================
+
+    st.divider()
+
+    st.header("🔐 Dual Strong LOCK Signal Monitor")
+
+    st.caption(
+        "Diagnostic sampling of strategy evaluations. "
+        "Checks are not the same as unique contracts."
     )
-else:
-    st.success(
-        "V2 Supabase tracker connected."
+
+    dual_monitor_rows = []
+
+    for market_name, series, emoji in SERIES:
+        for stage in (
+            "EARLY_10M",
+            "FINAL_5M",
+        ):
+            summary = monitor_summary(
+                series, stage
+            )
+
+            dual_monitor_rows.append(
+                {
+                    "Market": (
+                        f"{emoji} {market_name}"
+                    ),
+                    **summary,
+                }
+            )
+
+    st.dataframe(
+        dual_monitor_rows,
+        use_container_width=True,
+        hide_index=True,
     )
 
-
-# ============================================================
-# V2 STAGE BREAKDOWN
-# ============================================================
-
-st.subheader("⏱️ V2 10-Minute vs 5-Minute")
-
-v2_stage_table = []
-
-for stage, label in (
-    ("EARLY_10M", "10-Minute Early"),
-    ("FINAL_5M", "5-Minute Final"),
-):
-    stage_rows = [
-        row for row in v2_rows
-        if row.get("stage") == stage
+    dual_events = [
+        e for e in st.session_state.get("dual_monitor_events", [])
+        if e.get("Market") == "Bitcoin"
     ]
 
-    wins, losses, pending, rate = counts(
-        stage_rows
-    )
-
-    pnl, priced = paper_pnl(
-        stage_rows
-    )
-
-    v2_stage_table.append(
-        {
-            "Stage": label,
-            "Entries": len(stage_rows),
-            "Wins": wins,
-            "Losses": losses,
-            "Pending": pending,
-            "Win Rate": f"{rate:.1f}%",
-            "Paper P&L": f"${pnl:+.2f}",
-        }
-    )
-
-st.dataframe(
-    v2_stage_table,
-    use_container_width=True,
-    hide_index=True,
-)
-
-
-# ============================================================
-# V2 SIGNAL MONITOR
-# ============================================================
-
-st.subheader("📡 V2 Signal Monitor")
-
-v2_events = [
-    e for e in st.session_state.get("dual_v2_monitor_events", [])
-    if str(e.get("Ticker", "")).upper().startswith("KXBTC15M-")
-]
-
-v2_enter_events = [
-    event for event in v2_events
-    if event.get("Decision") == "ENTER"
-]
-
-v2_wait_events = [
-    event for event in v2_events
-    if event.get("Decision") == "WAIT"
-]
-
-session_entries = st.session_state.get(
-    "dual_v2_shadow_entries", {}
-)
-
-unique_v2_enters = set()
-
-for event in v2_enter_events:
-    unique_v2_enters.add(
-        (
-            event.get("Ticker"),
-            event.get("Stage"),
-        )
-    )
-
-for key in session_entries:
-    unique_v2_enters.add(key)
-
-for row in v2_rows:
-    unique_v2_enters.add(
-        (
-            row.get("ticker"),
-            row.get("stage"),
-        )
-    )
-
-monitor_columns = st.columns(4)
-
-monitor_columns[0].metric(
-    "V2 Evaluations",
-    len(v2_events),
-)
-
-monitor_columns[1].metric(
-    "V2 WAIT",
-    len(v2_wait_events),
-)
-
-monitor_columns[2].metric(
-    "Unique V2 ENTER",
-    len(unique_v2_enters),
-)
-
-monitor_columns[3].metric(
-    "Persisted V2 Entries",
-    len(v2_rows),
-)
-
-st.caption(
-    "Evaluations are session samples. "
-    "Unique ENTER includes session observations "
-    "and persisted entries; it is not an "
-    "all-time evaluation count."
-)
-
-with st.expander(
-    "🔎 Recent V2 evaluations",
-    expanded=False,
-):
-    if v2_events:
-        st.dataframe(
-            v2_events[:100],
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.info(
-            "Waiting for V2 evaluation windows."
-        )
-
-
-# ============================================================
-# V2 SUPABASE SAVE ERRORS
-# ============================================================
-
-v2_save_errors = st.session_state.get(
-    "dual_v2_save_errors", {}
-)
-
-if v2_save_errors:
     with st.expander(
-        "⚠️ V2 save issues",
-        expanded=True,
+        "📋 Recent Dual Strong LOCK evaluations"
     ):
-        for key, error in v2_save_errors.items():
-            st.warning(
-                f"{key[0]} · {key[1]}: {error}"
+        if dual_events:
+            st.dataframe(
+                dual_events[:50],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info(
+                "No Dual Strong LOCK evaluations "
+                "recorded in this session yet."
             )
 
 
-# ============================================================
-# PERMANENT V2 ENTRY HISTORY
-# ============================================================
 
-st.subheader("💾 Permanent V2 Entry History")
+    # ============================================================
+    # V2 SIGNAL MONITOR
+    # ============================================================
 
-if v2_rows:
-    v2_history = history_table(
-        v2_rows,
-        "Dual Strong LOCK 2.0",
+    st.subheader("📡 V2 Signal Monitor")
+
+    v2_events = [
+        e for e in st.session_state.get("dual_v2_monitor_events", [])
+        if str(e.get("Ticker", "")).upper().startswith("KXBTC15M-")
+    ]
+
+    v2_enter_events = [
+        event for event in v2_events
+        if event.get("Decision") == "ENTER"
+    ]
+
+    v2_wait_events = [
+        event for event in v2_events
+        if event.get("Decision") == "WAIT"
+    ]
+
+    session_entries = st.session_state.get(
+        "dual_v2_shadow_entries", {}
     )
 
-    st.dataframe(
-        v2_history,
-        use_container_width=True,
-        hide_index=True,
-    )
-else:
-    st.info(
-        "No permanent V2 entries recorded yet. "
-        "A qualifying signal must occur while "
-        "the app is evaluating its entry window."
-    )
+    unique_v2_enters = set()
 
-
-# ============================================================
-# FULL TRACKER HISTORY
-# ============================================================
-
-st.divider()
-
-st.header("📚 Complete Strategy History")
-
-all_history = []
-
-for strategy_name, strategy_rows in performance_groups:
-    all_history.extend(
-        history_table(
-            strategy_rows,
-            strategy_name,
+    for event in v2_enter_events:
+        unique_v2_enters.add(
+            (
+                event.get("Ticker"),
+                event.get("Stage"),
+            )
         )
+
+    for key in session_entries:
+        unique_v2_enters.add(key)
+
+    for row in v2_rows:
+        unique_v2_enters.add(
+            (
+                row.get("ticker"),
+                row.get("stage"),
+            )
+        )
+
+    monitor_columns = st.columns(4)
+
+    monitor_columns[0].metric(
+        "V2 Evaluations",
+        len(v2_events),
     )
 
-if all_history:
-    st.dataframe(
-        all_history,
-        use_container_width=True,
-        hide_index=True,
+    monitor_columns[1].metric(
+        "V2 WAIT",
+        len(v2_wait_events),
     )
 
-    st.download_button(
-        "📥 Export Tracker History (CSV)",
-        data=pd.DataFrame(
-            all_history
-        ).to_csv(index=False),
-        file_name=(
-            "queens_edge_254_history.csv"
-        ),
-        mime="text/csv",
-    )
-else:
-    st.info(
-        "No strategy history is available yet."
+    monitor_columns[2].metric(
+        "Unique V2 ENTER",
+        len(unique_v2_enters),
     )
 
+    monitor_columns[3].metric(
+        "Persisted V2 Entries",
+        len(v2_rows),
+    )
 
-# ============================================================
-# OFFICIAL SETTLEMENT SUMMARY
-# ============================================================
+    st.caption(
+        "Evaluations are session samples. "
+        "Unique ENTER includes session observations "
+        "and persisted entries; it is not an "
+        "all-time evaluation count."
+    )
 
-st.divider()
+    with st.expander(
+        "🔎 Recent V2 evaluations",
+        expanded=False,
+    ):
+        if v2_events:
+            st.dataframe(
+                v2_events[:100],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info(
+                "Waiting for V2 evaluation windows."
+            )
 
-st.header("🏁 Official Settlement Summary")
 
-settlement_rows = []
 
-for series, label in (
-    ("KXBTC15M", "₿ Bitcoin"),
-):
-    try:
-        recent = fetch_recent(series)
+    # ============================================================
+    # V2 SUPABASE SAVE ERRORS
+    # ============================================================
 
-        for market in recent:
-            result = str(
-                market.get("result")
-                or ""
-            ).upper()
+    v2_save_errors = st.session_state.get(
+        "dual_v2_save_errors", {}
+    )
 
-            settlement_rows.append(
+    if v2_save_errors:
+        with st.expander(
+            "⚠️ V2 save issues",
+            expanded=True,
+        ):
+            for key, error in v2_save_errors.items():
+                st.warning(
+                    f"{key[0]} · {key[1]}: {error}"
+                )
+
+
+
+    # ============================================================
+    # FLIP RADAR HISTORY
+    # ============================================================
+
+    st.divider()
+
+    st.header("⚡ Flip Radar History")
+
+    radar_events = [
+        e for e in st.session_state.get("radar_events", [])
+        if str(e.get("ticker", "")).upper().startswith("KXBTC15M-")
+    ]
+
+    if radar_events:
+        radar_table = []
+
+        for event in radar_events[:50]:
+            event_time = event.get("time")
+
+            radar_table.append(
                 {
-                    "Market": label,
-                    "Ticker": market.get(
-                        "ticker", "—"
+                    "Market": event.get(
+                        "market", "—"
                     ),
-                    "Target": target(market),
-                    "Result": result,
-                    "Closed": display_time(
-                        market.get("close_time")
+                    "Signal": event.get(
+                        "label", "—"
+                    ),
+                    "Move": (
+                        f"{event.get('move', 0):+.2f}¢"
+                    ),
+                    "Time": (
+                        event_time.astimezone(
+                            CENTRAL
+                        ).strftime("%I:%M:%S %p")
+                        if isinstance(
+                            event_time, datetime
+                        )
+                        else "—"
                     ),
                 }
             )
 
-    except Exception as exc:
+        st.dataframe(
+            radar_table,
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
         st.caption(
-            f"{label} settlements unavailable: {exc}"
+            "Monitoring live price reversals "
+            "and sudden momentum changes."
         )
 
-if settlement_rows:
-    st.dataframe(
-        settlement_rows,
-        use_container_width=True,
-        hide_index=True,
-    )
-else:
-    st.caption(
-        "Official settlement history "
-        "is temporarily unavailable."
-    )
 
+    # ============================================================
+    # FOOTER
+    # ============================================================
 
-# ============================================================
-# FLIP RADAR HISTORY
-# ============================================================
+    st.divider()
 
-st.divider()
-
-st.header("⚡ Flip Radar History")
-
-radar_events = [
-    e for e in st.session_state.get("radar_events", [])
-    if str(e.get("ticker", "")).upper().startswith("KXBTC15M-")
-]
-
-if radar_events:
-    radar_table = []
-
-    for event in radar_events[:50]:
-        event_time = event.get("time")
-
-        radar_table.append(
-            {
-                "Market": event.get(
-                    "market", "—"
-                ),
-                "Signal": event.get(
-                    "label", "—"
-                ),
-                "Move": (
-                    f"{event.get('move', 0):+.2f}¢"
-                ),
-                "Time": (
-                    event_time.astimezone(
-                        CENTRAL
-                    ).strftime("%I:%M:%S %p")
-                    if isinstance(
-                        event_time, datetime
-                    )
-                    else "—"
-                ),
-            }
-        )
-
-    st.dataframe(
-        radar_table,
-        use_container_width=True,
-        hide_index=True,
-    )
-else:
-    st.caption(
-        "Monitoring live price reversals "
-        "and sudden momentum changes."
-    )
-
-
-# ============================================================
-# FOOTER
-# ============================================================
-
-st.divider()
-
-st.markdown(
-    """
-    <div style="
-        text-align:center;
-        padding:18px 10px;
-        opacity:0.85;
-    ">
+    st.markdown(
+        """
         <div style="
-            font-size:20px;
-            font-weight:800;
-            color:#b78cff;
+            text-align:center;
+            padding:18px 10px;
+            opacity:0.85;
         ">
-            👑 QUEEN'S EDGE | 254
+            <div style="
+                font-size:20px;
+                font-weight:800;
+                color:#b78cff;
+            ">
+                👑 QUEEN'S EDGE | 254
+            </div>
+            <div style="
+                font-size:12px;
+                margin-top:7px;
+            ">
+                Bitcoin ·
+                Strong LOCK · Dual LOCK ·
+                V2 Shadow
+            </div>
+            <div style="
+                font-size:11px;
+                margin-top:8px;
+            ">
+                READ-ONLY · PAPER SIGNALS ONLY ·
+                NO AUTOMATIC TRADING
+            </div>
         </div>
-        <div style="
-            font-size:12px;
-            margin-top:7px;
-        ">
-            Bitcoin ·
-            Strong LOCK · Dual LOCK ·
-            V2 Shadow
-        </div>
-        <div style="
-            font-size:11px;
-            margin-top:8px;
-        ">
-            READ-ONLY · PAPER SIGNALS ONLY ·
-            NO AUTOMATIC TRADING
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 
 
