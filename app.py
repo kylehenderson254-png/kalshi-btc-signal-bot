@@ -54,6 +54,7 @@ CENTRAL = ZoneInfo("America/Chicago")
 
 SERIES = [
     ("Bitcoin", "KXBTC15M", "₿"),
+    ("WTI Oil", "KXWTI15M", "🛢️"),
 ]
 
 STAGES = [
@@ -477,7 +478,7 @@ def active_markets():
     results = {}
     errors = {}
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    with ThreadPoolExecutor(max_workers=len(SERIES)) as executor:
         futures = [
             executor.submit(fetch_series, series)
             for _, series, _ in SERIES
@@ -769,7 +770,7 @@ def v2_monitor_event(
 
 with st.sidebar:
     st.header("👑 QUEEN'S EDGE")
-    st.success("BITCOIN ONLY")
+    st.success("BITCOIN PRIMARY · WTI OIL SHADOW")
 
     st.caption("Market quotes: 1-second target")
     st.caption("Tracker updates: automatic every 15 seconds")
@@ -833,8 +834,14 @@ if early_store:
         st.sidebar.warning(f"Early tracker: {exc}")
 
 
-locked_rows = btc_rows(safe_rows(call_store))
-early_rows = btc_rows(safe_rows(early_store))
+# Keep Bitcoin performance exactly as before. Oil uses the existing
+# original Early/Locked trackers, with a separate paper-only report.
+all_locked_records = safe_rows(call_store)
+all_early_records = safe_rows(early_store)
+locked_rows = btc_rows(all_locked_records)
+early_rows = btc_rows(all_early_records)
+oil_locked_rows = [r for r in all_locked_records if str(r.get("series_ticker") or "").upper() == "KXWTI15M" or str(r.get("ticker") or "").upper().startswith("KXWTI15M-")]
+oil_early_rows = [r for r in all_early_records if str(r.get("series_ticker") or "").upper() == "KXWTI15M" or str(r.get("ticker") or "").upper().startswith("KXWTI15M-")]
 paper_rows = btc_rows(safe_rows(paper_store))
 strong_rows = btc_rows(safe_rows(strong_store))
 dual_rows = btc_rows(safe_rows(dual_store))
@@ -914,6 +921,8 @@ early_map = {
     for row in early_rows
     if row.get("ticker")
 }
+oil_locked_map = {r["ticker"]: r for r in oil_locked_rows if r.get("ticker")}
+oil_early_map = {r["ticker"]: r for r in oil_early_rows if r.get("ticker")}
 
 
 
@@ -955,7 +964,7 @@ else:
 
 st.markdown(
     '<div class="queen-subtitle">'
-    '₿ BITCOIN COMMAND CENTER'
+    '₿ BITCOIN COMMAND CENTER · 🛢️ OIL SHADOW'
     '</div>',
     unsafe_allow_html=True,
 )
@@ -1759,8 +1768,8 @@ def market_card(
                     "Collecting live quote history"
                 )
 
-        early = early_map.get(ticker)
-        locked = locked_map.get(ticker)
+        early = (early_map if series == "KXBTC15M" else oil_early_map).get(ticker)
+        locked = (locked_map if series == "KXBTC15M" else oil_locked_map).get(ticker)
 
         a, b = st.columns(2)
 
@@ -1787,33 +1796,34 @@ def market_card(
                 else "Awaiting lock"
             )
 
-        with st.expander("🔐 Detailed strategy checks · Strong LOCK / Dual / V2", expanded=False):
-            strong_lock_panel(
-                name,
-                series,
-                ticker,
-                market,
-                locked,
-                verified,
-            )
+        if series == "KXBTC15M":
+            with st.expander("🔐 Detailed strategy checks · Strong LOCK / Dual / V2", expanded=False):
+                strong_lock_panel(
+                    name,
+                    series,
+                    ticker,
+                    market,
+                    locked,
+                    verified,
+                )
 
-            dual_panel(
-                name,
-                series,
-                ticker,
-                market,
-                close,
-                verified,
-            )
+                dual_panel(
+                    name,
+                    series,
+                    ticker,
+                    market,
+                    close,
+                    verified,
+                )
 
-            dual_v2_panel(
-                name,
-                series,
-                ticker,
-                market,
-                close,
-                verified,
-            )
+                dual_v2_panel(
+                    name,
+                    series,
+                    ticker,
+                    market,
+                    close,
+                    verified,
+                )
 
         with st.expander(
             "🐋 Buying / Selling Pressure"
@@ -1861,12 +1871,10 @@ def live_grid():
     markets, errors = active_markets()
 
     st.markdown("### ⚡ LIVE BITCOIN")
-
-    market_card(
-        *SERIES[0],
-        markets,
-        errors,
-    )
+    market_card(*SERIES[0], markets, errors)
+    st.markdown("### 🛢️ WTI OIL · ORIGINAL SIGNAL SHADOW")
+    st.caption("Paper-only Early and Locked calls; Bitcoin V2 and other strategies remain Bitcoin-only.")
+    market_card(*SERIES[1], markets, errors)
 
 
 live_grid()
@@ -2346,8 +2354,31 @@ with overview_tab:
 
 
 
+    st.divider()
+    st.subheader("🛢️ WTI Oil · Original Signal Shadow")
+    st.caption("Separate from Bitcoin. Original Early and Locked calls, graded against official settlement. Quote-based estimated entry prices, one hypothetical contract per signal and an approximate 2¢ fee. No real trades.")
+    oil_groups = [("🛢️ Oil Locked", oil_locked_rows), ("🛢️ Oil Early", oil_early_rows)]
+    oil_scoreboard = []
+    for oil_name, oil_data in oil_groups:
+        ow, ol, op, orate = counts(oil_data)
+        opnl, opriced = paper_pnl(oil_data)
+        oil_scoreboard.append({"Strategy": oil_name, "Entries": len(oil_data), "Wins": ow, "Losses": ol, "Pending": op, "Win Rate": f"{orate:.1f}%" if ow + ol else "—", "Est. P&L": f"${opnl:+.2f}" if opriced else "N/A", "Priced": opriced})
+    st.dataframe(oil_scoreboard, use_container_width=True, hide_index=True)
+    oil_all = oil_locked_rows + oil_early_rows
+    oil_wins, oil_losses, oil_pending, oil_rate = counts(oil_all)
+    oil_total, oil_priced = paper_pnl(oil_all)
+    st.caption(f"Oil totals: {oil_wins} wins · {oil_losses} losses · {oil_pending} pending · {oil_priced} priced graded signals · estimated P&L: {f'${oil_total:+.2f}' if oil_priced else 'N/A'} · First target: 50 graded signals")
+
+
 
 with history_tab:
+    st.subheader("🛢️ WTI Oil · Paper Signal History")
+    oil_history = history_table(oil_locked_rows, "Oil Locked") + history_table(oil_early_rows, "Oil Early")
+    if oil_history:
+        st.dataframe(oil_history, use_container_width=True, hide_index=True)
+    else:
+        st.caption("Waiting for qualifying WTI Oil Early/Locked signals.")
+    st.divider()
     # ============================================================
     # PERMANENT V2 ENTRY HISTORY
     # ============================================================
@@ -2428,6 +2459,7 @@ with history_tab:
 
     for series, label in (
         ("KXBTC15M", "₿ Bitcoin"),
+        ("KXWTI15M", "🛢️ WTI Oil"),
     ):
         try:
             recent = fetch_recent(series)
@@ -2788,23 +2820,3 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
