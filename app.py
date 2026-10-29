@@ -1,5 +1,5 @@
 
-"""QUEEN'S EDGE | 254 — BTC + WTI OIL COMMAND CENTER.
+"""QUEEN'S EDGE | 254 — BITCOIN COMMAND CENTER.
 
 Read-only Kalshi dashboard. All entries are paper-only.
 """
@@ -54,7 +54,6 @@ CENTRAL = ZoneInfo("America/Chicago")
 
 SERIES = [
     ("Bitcoin", "KXBTC15M", "₿"),
-    ("WTI Oil", "KXWTI15M", "🛢️"),
 ]
 
 STAGES = [
@@ -338,18 +337,11 @@ def market_series(row):
     ):
         return "KXBTC15M"
 
-    if (
-        series == "KXWTI15M"
-        or ticker.startswith("KXWTI15M-")
-        or "wti" in name
-        or "oil" in name
-    ):
-        return "KXWTI15M"
 
     return None
 
 
-def btc_oil_rows(rows):
+def btc_rows(rows):
     return [
         row for row in rows
         if market_series(row) is not None
@@ -456,7 +448,7 @@ def active_markets():
     results = {}
     errors = {}
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=1) as executor:
         futures = [
             executor.submit(fetch_series, series)
             for _, series, _ in SERIES
@@ -748,10 +740,10 @@ def v2_monitor_event(
 
 with st.sidebar:
     st.header("👑 QUEEN'S EDGE")
-    st.success("BTC + WTI OIL ONLY")
+    st.success("BITCOIN ONLY")
 
     st.caption("Market quotes: 1-second target")
-    st.caption("Tracker updates: 15 seconds")
+    st.caption("Tracker updates: automatic every 15 seconds")
 
     sudden_cents = st.slider(
         "Sudden move threshold (¢)",
@@ -774,6 +766,10 @@ with st.sidebar:
         st.rerun()
 
     st.caption("Read-only. No automatic trading.")
+
+# Refresh the full page periodically for database history and grading.
+# The live Bitcoin quote card refreshes independently every second.
+st_autorefresh(interval=15_000, limit=None, key="btc_full_refresh")
 
 
 # ============================================================
@@ -808,12 +804,12 @@ if early_store:
         st.sidebar.warning(f"Early tracker: {exc}")
 
 
-locked_rows = btc_oil_rows(safe_rows(call_store))
-early_rows = btc_oil_rows(safe_rows(early_store))
-paper_rows = btc_oil_rows(safe_rows(paper_store))
-strong_rows = btc_oil_rows(safe_rows(strong_store))
-dual_rows = btc_oil_rows(safe_rows(dual_store))
-v2_rows = btc_oil_rows(safe_rows(v2_store))
+locked_rows = btc_rows(safe_rows(call_store))
+early_rows = btc_rows(safe_rows(early_store))
+paper_rows = btc_rows(safe_rows(paper_store))
+strong_rows = btc_rows(safe_rows(strong_store))
+dual_rows = btc_rows(safe_rows(dual_store))
+v2_rows = btc_rows(safe_rows(v2_store))
 
 
 # ============================================================
@@ -824,9 +820,9 @@ if paper_store:
     try:
         paper_grade_pending(
             paper_store,
-            safe_rows(paper_store),
+            paper_rows,
         )
-        paper_rows = btc_oil_rows(
+        paper_rows = btc_rows(
             safe_rows(paper_store)
         )
     except Exception as exc:
@@ -837,9 +833,9 @@ if strong_store:
     try:
         strong_grade_pending(
             strong_store,
-            safe_rows(strong_store),
+            strong_rows,
         )
-        strong_rows = btc_oil_rows(
+        strong_rows = btc_rows(
             safe_rows(strong_store)
         )
     except Exception as exc:
@@ -850,8 +846,8 @@ if strong_store:
 
 if dual_store:
     try:
-        dual_store.grade(safe_rows(dual_store))
-        dual_rows = btc_oil_rows(
+        dual_store.grade(dual_rows)
+        dual_rows = btc_rows(
             safe_rows(dual_store)
         )
     except Exception as exc:
@@ -869,7 +865,7 @@ if v2_store:
         if pending_v2:
             v2_grade_pending(v2_store, pending_v2)
 
-        v2_rows = btc_oil_rows(
+        v2_rows = btc_rows(
             safe_rows(v2_store)
         )
     except Exception as exc:
@@ -920,7 +916,7 @@ else:
 
 st.markdown(
     '<div class="queen-subtitle">'
-    '₿ BITCOIN + 🛢️ WTI OIL COMMAND CENTER'
+    '₿ BITCOIN COMMAND CENTER'
     '</div>',
     unsafe_allow_html=True,
 )
@@ -1830,23 +1826,11 @@ def live_grid():
         "⚡ LIVE MARKET COMMAND CENTER"
     )
 
-    left, right = st.columns(
-        2, gap="medium"
+    market_card(
+        *SERIES[0],
+        markets,
+        errors,
     )
-
-    with left:
-        market_card(
-            *SERIES[0],
-            markets,
-            errors,
-        )
-
-    with right:
-        market_card(
-            *SERIES[1],
-            markets,
-            errors,
-        )
 
 
 live_grid()
@@ -1971,9 +1955,6 @@ def display_market(row):
 
     if series == "KXBTC15M":
         return "₿ Bitcoin"
-
-    if series == "KXWTI15M":
-        return "🛢️ WTI Oil"
 
     return str(
         row.get("market_name")
@@ -2193,50 +2174,6 @@ st.dataframe(
 
 
 # ============================================================
-# BTC VS WTI PERFORMANCE
-# ============================================================
-
-st.subheader("₿ Bitcoin vs 🛢️ WTI Oil")
-
-market_performance = []
-
-for series, label in (
-    ("KXBTC15M", "₿ Bitcoin"),
-    ("KXWTI15M", "🛢️ WTI Oil"),
-):
-    market_rows = [
-        row for row in all_rows
-        if market_series(row) == series
-    ]
-
-    wins, losses, pending, rate = counts(
-        market_rows
-    )
-
-    pnl, priced = paper_pnl(
-        market_rows
-    )
-
-    market_performance.append(
-        {
-            "Market": label,
-            "Entries": len(market_rows),
-            "Wins": wins,
-            "Losses": losses,
-            "Pending": pending,
-            "Win Rate": f"{rate:.1f}%",
-            "Paper P&L": f"${pnl:+.2f}",
-        }
-    )
-
-st.dataframe(
-    market_performance,
-    use_container_width=True,
-    hide_index=True,
-)
-
-
-# ============================================================
 # DUAL STRONG LOCK MONITOR
 # ============================================================
 
@@ -2275,9 +2212,10 @@ st.dataframe(
     hide_index=True,
 )
 
-dual_events = st.session_state.get(
-    "dual_monitor_events", []
-)
+dual_events = [
+    e for e in st.session_state.get("dual_monitor_events", [])
+    if e.get("Market") == "Bitcoin"
+]
 
 with st.expander(
     "📋 Recent Dual Strong LOCK evaluations"
@@ -2408,56 +2346,15 @@ st.dataframe(
 
 
 # ============================================================
-# V2 MARKET BREAKDOWN
-# ============================================================
-
-st.subheader("📈 V2 Performance by Market")
-
-v2_market_table = []
-
-for series, label in (
-    ("KXBTC15M", "₿ Bitcoin"),
-    ("KXWTI15M", "🛢️ WTI Oil"),
-):
-    rows = [
-        row for row in v2_rows
-        if market_series(row) == series
-    ]
-
-    wins, losses, pending, rate = counts(
-        rows
-    )
-
-    pnl, priced = paper_pnl(rows)
-
-    v2_market_table.append(
-        {
-            "Market": label,
-            "Entries": len(rows),
-            "Wins": wins,
-            "Losses": losses,
-            "Pending": pending,
-            "Win Rate": f"{rate:.1f}%",
-            "Paper P&L": f"${pnl:+.2f}",
-        }
-    )
-
-st.dataframe(
-    v2_market_table,
-    use_container_width=True,
-    hide_index=True,
-)
-
-
-# ============================================================
 # V2 SIGNAL MONITOR
 # ============================================================
 
 st.subheader("📡 V2 Signal Monitor")
 
-v2_events = st.session_state.get(
-    "dual_v2_monitor_events", []
-)
+v2_events = [
+    e for e in st.session_state.get("dual_v2_monitor_events", [])
+    if str(e.get("Ticker", "")).upper().startswith("KXBTC15M-")
+]
 
 v2_enter_events = [
     event for event in v2_events
@@ -2636,7 +2533,6 @@ settlement_rows = []
 
 for series, label in (
     ("KXBTC15M", "₿ Bitcoin"),
-    ("KXWTI15M", "🛢️ WTI Oil"),
 ):
     try:
         recent = fetch_recent(series)
@@ -2687,9 +2583,10 @@ st.divider()
 
 st.header("⚡ Flip Radar History")
 
-radar_events = st.session_state.get(
-    "radar_events", []
-)
+radar_events = [
+    e for e in st.session_state.get("radar_events", [])
+    if str(e.get("ticker", "")).upper().startswith("KXBTC15M-")
+]
 
 if radar_events:
     radar_table = []
@@ -2756,7 +2653,7 @@ st.markdown(
             font-size:12px;
             margin-top:7px;
         ">
-            Bitcoin · WTI Oil ·
+            Bitcoin ·
             Strong LOCK · Dual LOCK ·
             V2 Shadow
         </div>
