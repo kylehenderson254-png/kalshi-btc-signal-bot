@@ -1935,6 +1935,13 @@ def counts(rows):
 
 
 def performance_entry_price(row):
+    """Estimated one-contract entry cost from recorded entry quotes.
+
+    Early/Locked trackers historically saved YES bid/ask instead of
+    entry_price. ABOVE buys YES at YES ask; BELOW buys NO at the
+    complementary NO ask (1 - YES bid). These are quote-based paper
+    estimates, not executed fills.
+    """
     for key in (
         "entry_price",
         "ask_price",
@@ -1942,15 +1949,26 @@ def performance_entry_price(row):
         "price",
     ):
         value = number(row.get(key))
-
         if value is None:
             continue
-
         if 1 < value <= 100:
             value /= 100
-
         if 0 <= value <= 1:
             return value
+
+    side = performance_side(row)
+    yes_bid = number(row.get("yes_bid"))
+    yes_ask = number(row.get("yes_ask"))
+
+    if yes_bid is not None and 1 < yes_bid <= 100:
+        yes_bid /= 100
+    if yes_ask is not None and 1 < yes_ask <= 100:
+        yes_ask /= 100
+
+    if side == "ABOVE" and yes_ask is not None and 0 <= yes_ask <= 1:
+        return yes_ask
+    if side == "BELOW" and yes_bid is not None and 0 <= yes_bid <= 1:
+        return 1.0 - yes_bid
 
     return None
 
