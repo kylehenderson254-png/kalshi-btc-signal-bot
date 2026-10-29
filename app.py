@@ -120,7 +120,7 @@ st.markdown(
 
     .queen-banner-wrap {position:relative; width:100%;}
     .queen-live-clock {
-        position:absolute; left:1.8%; top:50%; width:14%; height:42%;
+        position:absolute; box-sizing:border-box; left:1.8%; top:49%; width:13.5%; height:46%;
         background:#0a0b1c; border:1px solid #8058d4; border-radius:12px;
         display:flex; flex-direction:column; align-items:center; justify-content:center;
         gap:3px; color:#e9ddff; font-size:clamp(8px,1.05vw,17px);
@@ -129,7 +129,7 @@ st.markdown(
     .queen-live-clock strong {font-size:clamp(10px,1.35vw,23px);}
     .queen-live-indicator {color:#41e8bb; font-weight:800;}
     @media(max-width:700px){
-        .queen-live-clock {top:51%;height:40%;width:19%;left:1%;gap:0;font-size:7px;border-radius:5px;}
+        .queen-live-clock {top:49%;height:46%;width:13.5%;left:1.8%;gap:0;font-size:clamp(5px,1vw,9px);border-radius:5px;}
         .queen-live-clock strong {font-size:9px;}
     }
     .queen-banner {
@@ -193,6 +193,21 @@ st.markdown(
         .quote-price {
             font-size: 1rem;
         }
+    }
+    /* Compact layout; all trading logic unchanged. */
+    [data-testid="stVerticalBlock"] {gap:.48rem;}
+    [data-testid="stHorizontalBlock"] {gap:.65rem;}
+    div[data-testid="stMetric"] {padding:8px 10px; min-height:70px;}
+    div[data-testid="stMetricValue"] {font-size:1.25rem;}
+    .quote-box {min-height:76px; padding:7px;}
+    .quote-box p {display:inline-block; margin:6px 10px 1px;}
+    .quote-price {font-size:1.08rem;}
+    h1, h2, h3 {margin-top:.25rem !important; margin-bottom:.25rem !important;}
+    .queen-banner {margin-bottom:3px;}
+    @media(max-width:700px) {
+      .quote-box {min-height:70px; padding:5px;}
+      .quote-box p {margin:4px 6px 0;}
+      div[data-testid="stMetric"] {padding:6px;}
     }
     </style>
     """,
@@ -901,6 +916,7 @@ early_map = {
 }
 
 
+
 # ============================================================
 # HEADER — FULL QUEEN'S EDGE BANNER
 # ============================================================
@@ -1567,9 +1583,7 @@ def market_card(
     errors,
 ):
     with st.container(border=True):
-        st.subheader(
-            f"{emoji} {name.upper()}"
-        )
+        st.markdown(f"**{emoji} {name.upper()} · LIVE 15-MINUTE MARKET**")
 
         market = markets.get(series)
 
@@ -1773,32 +1787,33 @@ def market_card(
                 else "Awaiting lock"
             )
 
-        strong_lock_panel(
-            name,
-            series,
-            ticker,
-            market,
-            locked,
-            verified,
-        )
+        with st.expander("🔐 Detailed strategy checks · Strong LOCK / Dual / V2", expanded=False):
+            strong_lock_panel(
+                name,
+                series,
+                ticker,
+                market,
+                locked,
+                verified,
+            )
 
-        dual_panel(
-            name,
-            series,
-            ticker,
-            market,
-            close,
-            verified,
-        )
+            dual_panel(
+                name,
+                series,
+                ticker,
+                market,
+                close,
+                verified,
+            )
 
-        dual_v2_panel(
-            name,
-            series,
-            ticker,
-            market,
-            close,
-            verified,
-        )
+            dual_v2_panel(
+                name,
+                series,
+                ticker,
+                market,
+                close,
+                verified,
+            )
 
         with st.expander(
             "🐋 Buying / Selling Pressure"
@@ -1845,9 +1860,7 @@ def market_card(
 def live_grid():
     markets, errors = active_markets()
 
-    st.subheader(
-        "⚡ LIVE MARKET COMMAND CENTER"
-    )
+    st.markdown("### ⚡ LIVE BITCOIN")
 
     market_card(
         *SERIES[0],
@@ -1857,6 +1870,7 @@ def live_grid():
 
 
 live_grid()
+
 
 
 # ============================================================
@@ -2109,108 +2123,10 @@ overview_tab, history_tab, diagnostics_tab = st.tabs(
 
 with overview_tab:
     # ============================================================
-    # PERFORMANCE CENTER
-    # ============================================================
-
-    st.divider()
-
-    st.header("📊 QUEEN'S EDGE PERFORMANCE CENTER")
-
-    st.caption(
-        "Read-only strategy tracking. "
-        "Each strategy entry is counted separately. "
-        "Paper P&L is hypothetical, assumes one "
-        "contract per priced entry, and uses an "
-        "estimated 2¢ fee per contract."
-    )
-
-    total_wins, total_losses, total_pending, total_rate = (
-        counts(all_rows)
-    )
-
-    total_pnl, total_priced = paper_pnl(
-        all_rows
-    )
-
-    overall_columns = st.columns(5)
-
-    overall_columns[0].metric(
-        "Wins",
-        total_wins,
-    )
-
-    overall_columns[1].metric(
-        "Losses",
-        total_losses,
-    )
-
-    overall_columns[2].metric(
-        "Win Rate",
-        f"{total_rate:.1f}%",
-    )
-
-    overall_columns[3].metric(
-        "Pending",
-        total_pending,
-    )
-
-    overall_columns[4].metric(
-        "Paper P&L",
-        f"${total_pnl:+.2f}",
-    )
-
-    st.caption(
-        f"Paper P&L includes {total_priced} "
-        "graded entries with usable entry prices."
-    )
-
-
-
-    # ============================================================
-    # STRATEGY SCOREBOARD
-    # ============================================================
-
-    st.subheader("🏆 Strategy Scoreboard")
-
-    scoreboard = []
-
-    for strategy_name, strategy_rows in performance_groups:
-        wins, losses, pending, rate = counts(
-            strategy_rows
-        )
-
-        pnl, priced = paper_pnl(
-            strategy_rows
-        )
-
-        scoreboard.append(
-            {
-                "Strategy": strategy_name,
-                "Entries": len(strategy_rows),
-                "Wins": wins,
-                "Losses": losses,
-                "Pending": pending,
-                "Win Rate": f"{rate:.1f}%",
-                "Paper P&L": f"${pnl:+.2f}",
-                "Priced": priced,
-            }
-        )
-
-    st.dataframe(
-        scoreboard,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-
-
-    # ============================================================
     # DUAL STRONG LOCK V2 SHADOW PERFORMANCE
     # ============================================================
 
-    st.divider()
-
-    st.header("👑 Dual Strong LOCK 2.0 · SHADOW")
+    st.subheader("👑 V2 Shadow · Bitcoin Performance")
 
     st.caption(
         "V2 is a separate experimental paper-only "
@@ -2267,9 +2183,7 @@ with overview_tab:
             "an application restart unless saved."
         )
     else:
-        st.success(
-            "V2 Supabase tracker connected."
-        )
+        st.caption("🟢 V2 Supabase tracker connected")
 
 
 
@@ -2277,7 +2191,7 @@ with overview_tab:
     # V2 STAGE BREAKDOWN
     # ============================================================
 
-    st.subheader("⏱️ V2 10-Minute vs 5-Minute")
+    st.markdown("**⏱️ V2 10-Minute vs 5-Minute**")
 
     v2_stage_table = []
 
@@ -2315,6 +2229,103 @@ with overview_tab:
         use_container_width=True,
         hide_index=True,
     )
+
+
+
+    with st.expander("📊 All strategies · full scoreboard", expanded=False):
+        # ============================================================
+        # PERFORMANCE CENTER
+        # ============================================================
+
+        st.subheader("📊 All-Strategy Performance")
+
+        st.caption(
+            "Read-only strategy tracking. "
+            "Each strategy entry is counted separately. "
+            "Paper P&L is hypothetical, assumes one "
+            "contract per priced entry, and uses an "
+            "estimated 2¢ fee per contract."
+        )
+
+        total_wins, total_losses, total_pending, total_rate = (
+            counts(all_rows)
+        )
+
+        total_pnl, total_priced = paper_pnl(
+            all_rows
+        )
+
+        overall_columns = st.columns(5)
+
+        overall_columns[0].metric(
+            "Wins",
+            total_wins,
+        )
+
+        overall_columns[1].metric(
+            "Losses",
+            total_losses,
+        )
+
+        overall_columns[2].metric(
+            "Win Rate",
+            f"{total_rate:.1f}%",
+        )
+
+        overall_columns[3].metric(
+            "Pending",
+            total_pending,
+        )
+
+        overall_columns[4].metric(
+            "Paper P&L",
+            f"${total_pnl:+.2f}",
+        )
+
+        st.caption(
+            f"Paper P&L includes {total_priced} "
+            "graded entries with usable entry prices."
+        )
+
+
+
+        # ============================================================
+        # STRATEGY SCOREBOARD
+        # ============================================================
+
+        st.markdown("**🏆 Strategy Scoreboard**")
+
+        scoreboard = []
+
+        for strategy_name, strategy_rows in performance_groups:
+            wins, losses, pending, rate = counts(
+                strategy_rows
+            )
+
+            pnl, priced = paper_pnl(
+                strategy_rows
+            )
+
+            scoreboard.append(
+                {
+                    "Strategy": strategy_name,
+                    "Entries": len(strategy_rows),
+                    "Wins": wins,
+                    "Losses": losses,
+                    "Pending": pending,
+                    "Win Rate": f"{rate:.1f}%",
+                    "Paper P&L": f"${pnl:+.2f}",
+                    "Priced": priced,
+                }
+            )
+
+        st.dataframe(
+            scoreboard,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 
 
 
@@ -2709,6 +2720,9 @@ with diagnostics_tab:
         """,
         unsafe_allow_html=True,
     )
+
+
+
 
 
 
