@@ -929,9 +929,11 @@ oil_early_map = {r["ticker"]: r for r in oil_early_rows if r.get("ticker")}
 # HEADER — FULL QUEEN'S EDGE BANNER
 # ============================================================
 
-banner = Path(__file__).with_name(
-    "queens_banner.jpg"
-)
+banner_candidates = [Path(__file__).parent / name for name in (
+    "queens_banner.jpg", "queens_banner.jpeg", "queens_banner.png",
+    "assets/queens_banner.jpg", "images/queens_banner.jpg",
+)]
+banner = next((candidate for candidate in banner_candidates if candidate.is_file()), banner_candidates[0])
 
 if banner.exists():
     encoded = base64.b64encode(
@@ -944,7 +946,7 @@ if banner.exists():
     st.markdown(
         '<div class="queen-banner-wrap">'
         f'<img class="queen-banner" '
-        f'src="data:image/jpeg;base64,{encoded}" '
+        f'src="data:image/{"png" if banner.suffix.lower() == ".png" else "jpeg"};base64,{encoded}" '
         f'alt="QUEENS EDGE banner">'
         '<div class="queen-live-clock">'
         '<span class="queen-live-indicator">◉ LIVE · CENTRAL</span>'
@@ -1971,7 +1973,7 @@ def qe_trade_console(ticker, verified, yes_bid, yes_ask, no_bid, no_ask,
                                "YES midpoint (¢)": [v[1] * 100 for v in history]})
             st.line_chart(df.set_index("Time"), height=190)
             if stats.get("ready"):
-                st.caption(f"Recent quote support {stats['support']*100:.1f}¢ · resistance {stats['resistance']*100:.1f}¢. Not a TradingView candlestick or underlying Oil/BTC price chart.")
+                st.caption(f"Recent quote support {stats['support']*100:.1f}¢ · resistance {stats['resistance']*100:.1f}¢. Not an underlying Bitcoin price chart.")
         else:
             st.caption("Waiting for enough live quote observations.")
 
@@ -2066,31 +2068,76 @@ def btc_candles():
 
 
 def qe_btc_chart(frame, strike):
+    """Candles with timestamp-aligned, calculated technical indicators."""
     import altair as alt
-    if frame.empty:
-        st.warning("Bitcoin candle data unavailable. Chart cannot be refreshed.")
+    if frame.empty or len(frame) < 26:
+        st.warning("Insufficient fresh Bitcoin candles to calculate indicators.")
         return
-    data = frame.copy()
+    data = frame.copy().sort_values("time")
     data["direction"] = data["close"] >= data["open"]
+    data["EMA 9"] = data["close"].ewm(span=9, adjust=False).mean()
+    data["EMA 21"] = data["close"].ewm(span=21, adjust=False).mean()
+    typical = (data["high"] + data["low"] + data["close"]) / 3
+    # Session VWAP across returned Coinbase candles, not a daily anchored VWAP.
+    volume = data["volume"].clip(lower=0)
+    data["VWAP"] = (typical * volume).cumsum() / volume.cumsum().replace(0, float("nan"))
+    delta = data["close"].diff()
+    up = delta.clip(lower=0).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    down = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    rs = up / down.replace(0, float("nan"))
+    data["RSI 14"] = (100 - 100 / (1 + rs)).where(down.ne(0), 100)
+    macd = data["close"].ewm(span=12, adjust=False).mean() - data["close"].ewm(span=26, adjust=False).mean()
+    signal = macd.ewm(span=9, adjust=False).mean()
+    data["MACD"] = macd
+    data["Signal"] = signal
+    data["Histogram"] = macd - signal
+
+    latest = data.iloc[-1]
+    bullish = latest["EMA 9"] > latest["EMA 21"] and latest["close"] > latest["VWAP"] and latest["MACD"] > latest["Signal"]
+    bearish = latest["EMA 9"] < latest["EMA 21"] and latest["close"] < latest["VWAP"] and latest["MACD"] < latest["Signal"]
+    status = "🟢 BULLISH" if bullish else "🔴 BEARISH" if bearish else "🟡 NEUTRAL / WAIT"
+    left, right = st.columns([2, 1])
+    left.metric("📊 Trend summary · indicative", status)
+    right.metric("RSI (14)", f"{latest['RSI 14']:.1f}" if pd.notna(latest["RSI 14"]) else "—")
+    st.caption("Trend combines EMA 9/21, session VWAP and MACD. This is NOT an ABOVE/BELOW trade signal.")
+
+    selected = st.multiselect("Chart overlays", ["EMA 9", "EMA 21", "VWAP"], default=["EMA 9", "EMA 21", "VWAP"], key="qe_btc_overlays")
     wick = alt.Chart(data).mark_rule().encode(
         x=alt.X("time:T", title="Time (UTC)"),
         y=alt.Y("low:Q", scale=alt.Scale(zero=False), title="BTC price (USD)"),
-        y2="high:Q", color=alt.Color("direction:N", scale=alt.Scale(domain=[True, False], range=["#43d9ad", "#f0659e"]), legend=None),
+        y2="high:Q", color=alt.Color("direction:N", scale=alt.Scale(domain=[True, False], range=["#43d9ad", "#ff477f"]), legend=None),
     )
     body = alt.Chart(data).mark_bar(size=5).encode(
         x="time:T", y="open:Q", y2="close:Q",
-        color=alt.Color("direction:N", scale=alt.Scale(domain=[True, False], range=["#43d9ad", "#f0659e"]), legend=None),
+        color=alt.Color("direction:N", scale=alt.Scale(domain=[True, False], range=["#43d9ad", "#ff477f"]), legend=None),
         tooltip=["time:T", "open:Q", "high:Q", "low:Q", "close:Q", "volume:Q"],
     )
     chart = wick + body
+    for field, color in (("EMA 9", "#25baff"), ("EMA 21", "#f7b731"), ("VWAP", "#c985ff")):
+        if field in selected:
+            overlay = alt.Chart(data).mark_line(color=color, strokeWidth=2.5).encode(x="time:T", y=alt.Y(f"{field}:Q"), tooltip=["time:T", alt.Tooltip(f"{field}:Q", format=",.2f")])
+            chart = chart + overlay
     if strike is not None:
-        target_rule = alt.Chart(pd.DataFrame({"target": [strike]})).mark_rule(
-            color="#e6bdff", strokeDash=[6, 4], size=2
-        ).encode(y="target:Q")
-        chart = chart + target_rule
-    st.altair_chart(chart.properties(height=420).interactive(), use_container_width=True)
-    st.caption("Coinbase Exchange BTC-USD 1-minute candles, updated approximately every 30 seconds. Dashed line: Kalshi target. Coinbase prices are NOT verified to match Kalshi settlement.")
+        chart = chart + alt.Chart(pd.DataFrame({"target": [strike]})).mark_rule(color="#fce27b", strokeDash=[6, 4], size=2).encode(y="target:Q")
+    st.altair_chart(chart.properties(height=430).interactive(), use_container_width=True)
+    st.caption("Coinbase BTC-USD 1-minute candles (approximately 30-second refresh). VWAP uses available candle volume and resets with this fetched window. Coinbase price is NOT validated as Kalshi's settlement reference.")
 
+    with st.expander("📉 RSI (14) and MACD (12, 26, 9)", expanded=True):
+        rsi_chart = alt.Chart(data).mark_line(color="#b689ff", strokeWidth=2).encode(x=alt.X("time:T", title=None), y=alt.Y("RSI 14:Q", scale=alt.Scale(domain=[0,100]), title="RSI"))
+        guides = alt.Chart(pd.DataFrame({"level": [30, 70]})).mark_rule(color="#777", strokeDash=[3,4]).encode(y="level:Q")
+        st.altair_chart((rsi_chart + guides).properties(height=135), use_container_width=True)
+        macd_long = data[["time", "MACD", "Signal"]].melt(id_vars="time", var_name="line", value_name="value")
+        lines = alt.Chart(macd_long).mark_line(strokeWidth=2).encode(x=alt.X("time:T", title="Time (UTC)"), y=alt.Y("value:Q", title="MACD"), color=alt.Color("line:N", scale=alt.Scale(domain=["MACD", "Signal"], range=["#28c5ff", "#f6b13c"])))
+        bars = alt.Chart(data).mark_bar(opacity=0.4).encode(x="time:T", y="Histogram:Q")
+        st.altair_chart((lines + bars).properties(height=145), use_container_width=True)
+
+
+st.markdown("""<style>
+[data-testid="stMetric"] {background:linear-gradient(140deg,#23113f,#110c24);border:1px solid #6744aa;border-radius:16px;padding:14px 16px;box-shadow:0 4px 18px #0005}
+[data-testid="stMetricLabel"] {color:#e3d2ff!important;font-weight:700}
+[data-testid="stMetricValue"] {color:#58c6ff!important;font-weight:800}
+[data-testid="stMetric"]:has([data-testid="stMetricLabel"]:is(*)) {overflow:hidden}
+</style>""", unsafe_allow_html=True)
 
 @st.fragment(run_every="5s")
 def live_grid():
