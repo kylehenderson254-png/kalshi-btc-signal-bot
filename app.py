@@ -964,7 +964,7 @@ else:
 
 st.markdown(
     '<div class="queen-subtitle">'
-    '₿ BITCOIN COMMAND CENTER · 🛢️ OIL SHADOW'
+    '🛢️ OIL SCALP WATCH · ₿ BITCOIN TRACKING'
     '</div>',
     unsafe_allow_html=True,
 )
@@ -1736,6 +1736,15 @@ def market_card(
         else:
             lean = "⚪ NO CLEAR CALL"
 
+        quote_age = None
+        stamp = st.session_state["last_good_times"].get(series)
+        if stamp is not None:
+            quote_age = time.time() - stamp
+        history = st.session_state["quote_history"].get(ticker, [])
+        locked = (locked_map if series == "KXBTC15M" else oil_locked_map).get(ticker)
+        qe_trade_console(ticker, verified, yes_bid, yes_ask, no_bid, no_ask,
+                         remaining if close else None, quote_age, history, locked)
+
         st.markdown(
             f"**Market lean: {lean}**"
         )
@@ -1748,25 +1757,6 @@ def market_card(
         history = st.session_state[
             "quote_history"
         ].get(ticker, [])
-
-        with st.expander(
-            "📈 Live chart",
-            expanded=False,
-        ):
-            if len(history) >= 2:
-                st.line_chart(
-                    {
-                        "YES midpoint (¢)": [
-                            value * 100
-                            for _, value, _ in history
-                        ]
-                    },
-                    height=160,
-                )
-            else:
-                st.caption(
-                    "Collecting live quote history"
-                )
 
         early = (early_map if series == "KXBTC15M" else oil_early_map).get(ticker)
         locked = (locked_map if series == "KXBTC15M" else oil_locked_map).get(ticker)
@@ -1862,6 +1852,131 @@ def market_card(
                 )
 
 
+
+# ============================================================
+# QUEEN'S EDGE — SCALP INTELLIGENCE (OBSERVATIONAL / PAPER ONLY)
+# Uses Kalshi YES quote history, NOT an underlying Oil/BTC feed.
+# This module deliberately does not issue unvalidated BUY NOW signals.
+# ============================================================
+
+def qe_sma(values, length):
+    if len(values) < length:
+        return None
+    return sum(values[-length:]) / length
+
+
+def qe_ema_series(values, length):
+    if not values:
+        return []
+    alpha = 2 / (length + 1)
+    output = [float(values[0])]
+    for v in values[1:]:
+        output.append(alpha * float(v) + (1 - alpha) * output[-1])
+    return output
+
+
+def qe_rsi(values, length=14):
+    if len(values) <= length:
+        return None
+    deltas = [values[i] - values[i - 1] for i in range(1, len(values))]
+    gains = [max(d, 0) for d in deltas[-length:]]
+    losses = [max(-d, 0) for d in deltas[-length:]]
+    ag, al = sum(gains) / length, sum(losses) / length
+    if al == 0:
+        return 100.0 if ag > 0 else 50.0
+    return 100 - 100 / (1 + ag / al)
+
+
+def qe_indicators(history):
+    # Observations are quote snapshots, not exchange candles or trade volume.
+    values = [float(item[1]) for item in history if item[1] is not None]
+    if len(values) < 20:
+        return {"ready": False, "samples": len(values)}
+    short = qe_ema_series(values, 8)
+    long = qe_ema_series(values, 17)
+    macd = [a - b for a, b in zip(short, long)]
+    signal = qe_ema_series(macd, 6)
+    rsi = qe_rsi(values)
+    recent = values[-10:]
+    trend = "RISING" if short[-1] > long[-1] and values[-1] > values[-6] else (
+        "FALLING" if short[-1] < long[-1] and values[-1] < values[-6] else "MIXED")
+    momentum = "UP" if macd[-1] > signal[-1] else "DOWN"
+    return {"ready": True, "samples": len(values), "trend": trend,
+            "momentum": momentum, "rsi": rsi,
+            "support": min(recent), "resistance": max(recent),
+            "last": values[-1]}
+
+
+def qe_trade_console(ticker, verified, yes_bid, yes_ask, no_bid, no_ask,
+                     remaining, quote_age, history, locked):
+    stats = qe_indicators(history)
+    fresh = quote_age is not None and quote_age <= 15
+    quotes_ok = all(v is not None for v in (yes_bid, yes_ask, no_bid, no_ask))
+    quotes_ok = quotes_ok and yes_ask >= yes_bid and no_ask >= no_bid
+    direction = "UNCERTAIN"
+    if verified and stats.get("ready"):
+        if stats["trend"] == "RISING" and stats["momentum"] == "UP":
+            direction = "ABOVE"
+        elif stats["trend"] == "FALLING" and stats["momentum"] == "DOWN":
+            direction = "BELOW"
+    ask = yes_ask if direction == "ABOVE" else no_ask if direction == "BELOW" else None
+    bid = yes_bid if direction == "ABOVE" else no_bid if direction == "BELOW" else None
+    spread = (ask - bid) if ask is not None and bid is not None else None
+    warnings = []
+    if not verified: warnings.append("Contract direction not verified")
+    if not fresh: warnings.append("Quotes unavailable or stale")
+    if not quotes_ok: warnings.append("Incomplete or crossed quotes")
+    if not stats.get("ready"): warnings.append("Building quote history")
+    if direction == "UNCERTAIN": warnings.append("Trend and momentum do not agree")
+    if spread is not None and spread > 0.05: warnings.append("Wide spread")
+    if ask is not None and ask >= 0.80: warnings.append("High entry price")
+    if remaining is None or remaining <= 120: warnings.append("Too close to settlement")
+    # Do not call a trade GOOD based solely on short-lived quote indicators.
+    status = "🔴 SKIP / HIGH RISK" if (not fresh or not quotes_ok or not verified or (ask is not None and ask >= 0.80)) else "🟡 WAIT / PAPER WATCH"
+    if not stats.get("ready"):
+        status = "🟡 WARMING UP"
+    st.markdown("#### ⚡ SCALP COMMAND CENTER · PAPER / OBSERVATION")
+    a, b, c, d = st.columns([1.35, 1.1, 1.1, 1.25], gap="small")
+    a.metric("Direction watch", direction)
+    b.metric("Current ask", cents(ask))
+    c.metric("Sell bid now", cents(bid))
+    d.metric("Entry decision", status)
+    e, f, g, h = st.columns(4, gap="small")
+    e.metric("Quote trend", stats.get("trend", "WARMING"))
+    f.metric("MACD momentum", stats.get("momentum", "—"))
+    g.metric("Quote RSI", f"{stats['rsi']:.0f}" if stats.get("rsi") is not None else "—")
+    h.metric("Bid/ask spread", cents(spread))
+    st.caption("Quote RSI/MACD are experimental and based on Kalshi YES midpoint snapshots, not underlying price candles. No validated edge or BUY NOW signal.")
+    if warnings:
+        st.caption("⚠️ " + " · ".join(warnings))
+    st.markdown("**🔒 Settlement LOCK:** " + (
+        f"Existing {locked.get('call', '—')} · {locked.get('status', '—')} (not a new STRONG LOCK)"
+        if locked else "NO VERIFIED STRONG LOCK — waiting for independent validation"))
+    with st.expander("💰 Paper position monitor · enter your actual fill price", expanded=False):
+        st.caption("This calculator does not place trades or save positions. Use the current SELL bid to estimate an immediate exit; actual fills and fees can differ.")
+        side = st.selectbox("Position side", ["ABOVE", "BELOW"], key=f"qe_side_{ticker}")
+        paid = st.number_input("Entry price (cents)", 1, 99, 40, key=f"qe_paid_{ticker}")
+        qty = st.number_input("Contracts", 1, 10000, 1, key=f"qe_qty_{ticker}")
+        fee = st.number_input("Estimated total round-trip fees ($)", 0.0, 1000.0, 0.02, 0.01, key=f"qe_fee_{ticker}")
+        sell_bid = yes_bid if side == "ABOVE" else no_bid
+        if sell_bid is None or not fresh:
+            st.warning("No fresh executable exit quote. Do not rely on this P&L.")
+        else:
+            pnl = ((sell_bid * 100 - paid) / 100) * qty - fee
+            ret = pnl / (paid / 100 * qty) * 100
+            st.metric("Indicative exit P&L", f"${pnl:+.2f}", f"{ret:+.1f}% after estimated fee")
+            st.caption("Exit watch: " + ("Profit available at displayed bid; check depth before selling." if pnl > 0 else "Loss at displayed bid; compare with your predefined risk limit."))
+    with st.expander("📈 Live quote trend · support / resistance", expanded=False):
+        if len(history) >= 3:
+            df = pd.DataFrame({"Time": [v[0] for v in history],
+                               "YES midpoint (¢)": [v[1] * 100 for v in history]})
+            st.line_chart(df.set_index("Time"), height=190)
+            if stats.get("ready"):
+                st.caption(f"Recent quote support {stats['support']*100:.1f}¢ · resistance {stats['resistance']*100:.1f}¢. Not a TradingView candlestick or underlying Oil/BTC price chart.")
+        else:
+            st.caption("Waiting for enough live quote observations.")
+
+
 # ============================================================
 # LIVE MARKET GRID
 # ============================================================
@@ -1870,11 +1985,14 @@ def market_card(
 def live_grid():
     markets, errors = active_markets()
 
-    st.markdown("### ⚡ LIVE BITCOIN")
-    market_card(*SERIES[0], markets, errors)
-    st.markdown("### 🛢️ WTI OIL · ORIGINAL SIGNAL SHADOW")
-    st.caption("Paper-only Early and Locked calls; Bitcoin V2 and other strategies remain Bitcoin-only.")
-    market_card(*SERIES[1], markets, errors)
+    st.markdown("### 👑 LIVE SCALP & LOCK COMMAND CENTER · PAPER ONLY")
+    st.caption("Oil first · Bitcoin available via tab. Experimental trend signals are not validated BUY/SELL recommendations.")
+    selected = st.radio(
+        "Market", ["🛢️ WTI Oil", "₿ Bitcoin"],
+        horizontal=True, label_visibility="collapsed", key="qe_market_selector"
+    )
+    chosen = SERIES[1] if selected == "🛢️ WTI Oil" else SERIES[0]
+    market_card(*chosen, markets, errors)
 
 
 live_grid()
@@ -2820,3 +2938,10 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+# Compact screen spacing (visual only)
+st.markdown("""<style>
+[data-testid="stMetric"] {background:rgba(65,35,112,.22);border:1px solid rgba(165,117,230,.2);border-radius:12px;padding:8px 10px}
+[data-testid="stMetricLabel"] {font-size:.8rem}
+[data-testid="stMetricValue"] {font-size:clamp(1rem,1.6vw,1.5rem)}
+[data-testid="stVerticalBlock"] {gap:.55rem}
+</style>""", unsafe_allow_html=True)
