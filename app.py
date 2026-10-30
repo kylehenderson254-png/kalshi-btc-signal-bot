@@ -54,7 +54,6 @@ CENTRAL = ZoneInfo("America/Chicago")
 
 SERIES = [
     ("Bitcoin", "KXBTC15M", "₿"),
-    ("WTI Oil", "KXWTI15M", "🛢️"),
 ]
 
 STAGES = [
@@ -964,7 +963,7 @@ else:
 
 st.markdown(
     '<div class="queen-subtitle">'
-    '🛢️ OIL SCALP WATCH · ₿ BITCOIN TRACKING'
+    '₿ BITCOIN 15-MINUTE COMMAND CENTER'
     '</div>',
     unsafe_allow_html=True,
 )
@@ -2044,18 +2043,87 @@ def qe_compact_summary(name, series, market, errors):
             st.caption("Illustrative only; not a fill or recommendation. Fees and slippage can change results.")
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def btc_candles():
+    """Public Coinbase BTC-USD OHLC candles; distinct from Kalshi settlement."""
+    try:
+        response = requests.get(
+            "https://api.exchange.coinbase.com/products/BTC-USD/candles",
+            params={"granularity": 60},
+            headers={"User-Agent": "QueensEdge254/preview"}, timeout=7,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        if not isinstance(rows, list) or not rows:
+            return pd.DataFrame()
+        frame = pd.DataFrame(rows, columns=["time", "low", "high", "open", "close", "volume"])
+        for column in ("low", "high", "open", "close", "volume"):
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True)
+        return frame.dropna().sort_values("time").tail(120)
+    except (requests.RequestException, ValueError, TypeError, KeyError):
+        return pd.DataFrame()
+
+
+def qe_btc_chart(frame, strike):
+    import altair as alt
+    if frame.empty:
+        st.warning("Bitcoin candle data unavailable. Chart cannot be refreshed.")
+        return
+    data = frame.copy()
+    data["direction"] = data["close"] >= data["open"]
+    wick = alt.Chart(data).mark_rule().encode(
+        x=alt.X("time:T", title="Time (UTC)"),
+        y=alt.Y("low:Q", scale=alt.Scale(zero=False), title="BTC price (USD)"),
+        y2="high:Q", color=alt.Color("direction:N", scale=alt.Scale(domain=[True, False], range=["#43d9ad", "#f0659e"]), legend=None),
+    )
+    body = alt.Chart(data).mark_bar(size=5).encode(
+        x="time:T", y="open:Q", y2="close:Q",
+        color=alt.Color("direction:N", scale=alt.Scale(domain=[True, False], range=["#43d9ad", "#f0659e"]), legend=None),
+        tooltip=["time:T", "open:Q", "high:Q", "low:Q", "close:Q", "volume:Q"],
+    )
+    chart = wick + body
+    if strike is not None:
+        target_rule = alt.Chart(pd.DataFrame({"target": [strike]})).mark_rule(
+            color="#e6bdff", strokeDash=[6, 4], size=2
+        ).encode(y="target:Q")
+        chart = chart + target_rule
+    st.altair_chart(chart.properties(height=420).interactive(), use_container_width=True)
+    st.caption("Coinbase Exchange BTC-USD 1-minute candles, updated approximately every 30 seconds. Dashed line: Kalshi target. Coinbase prices are NOT verified to match Kalshi settlement.")
+
+
 @st.fragment(run_every="5s")
 def live_grid():
     markets, errors = active_markets()
-    selected = st.radio(
-        "Market", ["🛢️ WTI Oil", "₿ Bitcoin"],
-        horizontal=True, label_visibility="collapsed", key="qe_market_selector"
-    )
-    chosen = SERIES[1] if selected == "🛢️ WTI Oil" else SERIES[0]
-    name, series, emoji = chosen
-    qe_compact_summary(name, series, markets.get(series), errors)
-    with st.expander("🔎 Detailed signals, radar and optional quote chart", expanded=False):
-        market_card(*chosen, markets, errors)
+    name, series, emoji = SERIES[0]
+    market = markets.get(series)
+    st.markdown("### 👑 BITCOIN COMMAND CENTER · PAPER MODE")
+    qe_compact_summary(name, series, market, errors)
+    strike = None
+    if market:
+        strike = next((number(market.get(k)) for k in
+                       ("floor_strike", "functional_strike", "custom_strike", "cap_strike")
+                       if number(market.get(k)) is not None), None)
+    st.markdown("#### 📈 Live Bitcoin price action")
+    frame = btc_candles()
+    qe_btc_chart(frame, strike)
+    st.markdown("#### 🛡️ Paper auto-trader · Safety console")
+    st.metric("Maximum loss exposure per trade", "$5.00")
+    st.error("AUTO LIVE: DISABLED · NO REAL ORDERS")
+    st.markdown("**Decision: WAIT / NO ENTRY**")
+    st.caption("The automated decision engine is deliberately blocked until settlement reference, fee calculations, signal edge and persistence have been validated. This is not a live trading bot.")
+    if market:
+        yes_ask, no_ask = quote(market, "yes", "ask"), quote(market, "no", "ask")
+        st.markdown("**Illustrative maximum contract quantity (before fees):**")
+        c1, c2 = st.columns(2)
+        for col, label, ask in ((c1, "ABOVE / YES", yes_ask), (c2, "BELOW / NO", no_ask)):
+            if ask is not None and 0 < ask <= 1:
+                col.metric(label, f"{int(5 // ask)} max contracts before fees")
+            else:
+                col.metric(label, "UNAVAILABLE")
+        st.caption("Not a buy recommendation. Fees reduce allowable quantity; actual order sizing must account for fees and available balance.")
+    with st.expander("🔎 Existing Bitcoin signals, radar and quote analysis", expanded=False):
+        market_card(*SERIES[0], markets, errors)
 
 live_grid()
 
@@ -2534,31 +2602,8 @@ with overview_tab:
 
 
 
-    st.divider()
-    st.subheader("🛢️ WTI Oil · Original Signal Shadow")
-    st.caption("Separate from Bitcoin. Original Early and Locked calls, graded against official settlement. Quote-based estimated entry prices, one hypothetical contract per signal and an approximate 2¢ fee. No real trades.")
-    oil_groups = [("🛢️ Oil Locked", oil_locked_rows), ("🛢️ Oil Early", oil_early_rows)]
-    oil_scoreboard = []
-    for oil_name, oil_data in oil_groups:
-        ow, ol, op, orate = counts(oil_data)
-        opnl, opriced = paper_pnl(oil_data)
-        oil_scoreboard.append({"Strategy": oil_name, "Entries": len(oil_data), "Wins": ow, "Losses": ol, "Pending": op, "Win Rate": f"{orate:.1f}%" if ow + ol else "—", "Est. P&L": f"${opnl:+.2f}" if opriced else "N/A", "Priced": opriced})
-    st.dataframe(oil_scoreboard, use_container_width=True, hide_index=True)
-    oil_all = oil_locked_rows + oil_early_rows
-    oil_wins, oil_losses, oil_pending, oil_rate = counts(oil_all)
-    oil_total, oil_priced = paper_pnl(oil_all)
-    st.caption(f"Oil totals: {oil_wins} wins · {oil_losses} losses · {oil_pending} pending · {oil_priced} priced graded signals · estimated P&L: {f'${oil_total:+.2f}' if oil_priced else 'N/A'} · First target: 50 graded signals")
-
-
 
 with history_tab:
-    st.subheader("🛢️ WTI Oil · Paper Signal History")
-    oil_history = history_table(oil_locked_rows, "Oil Locked") + history_table(oil_early_rows, "Oil Early")
-    if oil_history:
-        st.dataframe(oil_history, use_container_width=True, hide_index=True)
-    else:
-        st.caption("Waiting for qualifying WTI Oil Early/Locked signals.")
-    st.divider()
     # ============================================================
     # PERMANENT V2 ENTRY HISTORY
     # ============================================================
@@ -2639,7 +2684,6 @@ with history_tab:
 
     for series, label in (
         ("KXBTC15M", "₿ Bitcoin"),
-        ("KXWTI15M", "🛢️ WTI Oil"),
     ):
         try:
             recent = fetch_recent(series)
