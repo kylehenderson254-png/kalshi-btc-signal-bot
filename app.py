@@ -770,7 +770,7 @@ def v2_monitor_event(
 
 with st.sidebar:
     st.header("👑 QUEEN'S EDGE")
-    st.success("BITCOIN PRIMARY · WTI OIL SHADOW")
+    st.success("OIL PRIMARY · BITCOIN TRACKING")
 
     st.caption("Market quotes: 1-second target")
     st.caption("Tracker updates: automatic every 15 seconds")
@@ -964,7 +964,7 @@ else:
 
 st.markdown(
     '<div class="queen-subtitle">'
-    '🛢️ OIL SCALP WATCH · ₿ BITCOIN TRACKING'
+    '🛢️ OIL MARKET INTELLIGENCE · ₿ BITCOIN TRACKING'
     '</div>',
     unsafe_allow_html=True,
 )
@@ -1909,10 +1909,11 @@ def qe_indicators(history):
 
 def qe_trade_console(ticker, verified, yes_bid, yes_ask, no_bid, no_ask,
                      remaining, quote_age, history, locked):
+    """Conservative, paper-only settlement intelligence; never an execution signal."""
     stats = qe_indicators(history)
     fresh = quote_age is not None and quote_age <= 15
-    quotes_ok = all(v is not None for v in (yes_bid, yes_ask, no_bid, no_ask))
-    quotes_ok = quotes_ok and yes_ask >= yes_bid and no_ask >= no_bid
+    valid = all(v is not None for v in (yes_bid, yes_ask, no_bid, no_ask))
+    valid = valid and yes_ask >= yes_bid and no_ask >= no_bid
     direction = "UNCERTAIN"
     if verified and stats.get("ready"):
         if stats["trend"] == "RISING" and stats["momentum"] == "UP":
@@ -1921,60 +1922,46 @@ def qe_trade_console(ticker, verified, yes_bid, yes_ask, no_bid, no_ask,
             direction = "BELOW"
     ask = yes_ask if direction == "ABOVE" else no_ask if direction == "BELOW" else None
     bid = yes_bid if direction == "ABOVE" else no_bid if direction == "BELOW" else None
-    spread = (ask - bid) if ask is not None and bid is not None else None
-    warnings = []
-    if not verified: warnings.append("Contract direction not verified")
-    if not fresh: warnings.append("Quotes unavailable or stale")
-    if not quotes_ok: warnings.append("Incomplete or crossed quotes")
-    if not stats.get("ready"): warnings.append("Building quote history")
-    if direction == "UNCERTAIN": warnings.append("Trend and momentum do not agree")
-    if spread is not None and spread > 0.05: warnings.append("Wide spread")
-    if ask is not None and ask >= 0.80: warnings.append("High entry price")
-    if remaining is None or remaining <= 120: warnings.append("Too close to settlement")
-    # Do not call a trade GOOD based solely on short-lived quote indicators.
-    status = "🔴 SKIP / HIGH RISK" if (not fresh or not quotes_ok or not verified or (ask is not None and ask >= 0.80)) else "🟡 WAIT / PAPER WATCH"
-    if not stats.get("ready"):
-        status = "🟡 WARMING UP"
-    st.markdown("#### ⚡ SCALP COMMAND CENTER · PAPER / OBSERVATION")
-    a, b, c, d = st.columns([1.35, 1.1, 1.1, 1.25], gap="small")
-    a.metric("Direction watch", direction)
-    b.metric("Current ask", cents(ask))
-    c.metric("Sell bid now", cents(bid))
-    d.metric("Entry decision", status)
-    e, f, g, h = st.columns(4, gap="small")
-    e.metric("Quote trend", stats.get("trend", "WARMING"))
-    f.metric("MACD momentum", stats.get("momentum", "—"))
+    spread = ask - bid if ask is not None and bid is not None else None
+    issues = []
+    if not verified: issues.append("Direction/settlement terms unverified")
+    if not fresh: issues.append("Quotes missing or stale")
+    if not valid: issues.append("Invalid or incomplete bid/ask")
+    if not stats.get("ready"): issues.append("Gathering observations")
+    if direction == "UNCERTAIN": issues.append("Trend and momentum disagree")
+    if spread is not None and spread > .05: issues.append("Wide spread")
+    if ask is not None and ask >= .80: issues.append("Expensive entry")
+    if remaining is None or remaining <= 120: issues.append("Near settlement")
+    if issues:
+        decision = "WAIT / NO ENTRY"
+    else:
+        decision = "PAPER WATCH ONLY"
+    st.markdown("### 👑 MARKET INTELLIGENCE · SETTLEMENT WATCH")
+    a,b,c,d = st.columns(4, gap="small")
+    a.metric("Market outlook", direction)
+    b.metric("Entry assessment", decision)
+    c.metric("Current entry ask", cents(ask))
+    d.metric("Time remaining", f"{remaining//60:02d}:{remaining%60:02d}" if remaining is not None else "—")
+    e,f,g,h = st.columns(4, gap="small")
+    e.metric("Quote trend", stats.get("trend","WARMING"))
+    f.metric("Momentum", stats.get("momentum","—"))
     g.metric("Quote RSI", f"{stats['rsi']:.0f}" if stats.get("rsi") is not None else "—")
     h.metric("Bid/ask spread", cents(spread))
-    st.caption("Quote RSI/MACD are experimental and based on Kalshi YES midpoint snapshots, not underlying price candles. No validated edge or BUY NOW signal.")
-    if warnings:
-        st.caption("⚠️ " + " · ".join(warnings))
-    st.markdown("**🔒 Settlement LOCK:** " + (
-        f"Existing {locked.get('call', '—')} · {locked.get('status', '—')} (not a new STRONG LOCK)"
-        if locked else "NO VERIFIED STRONG LOCK — waiting for independent validation"))
-    with st.expander("💰 Paper position monitor · enter your actual fill price", expanded=False):
-        st.caption("This calculator does not place trades or save positions. Use the current SELL bid to estimate an immediate exit; actual fills and fees can differ.")
-        side = st.selectbox("Position side", ["ABOVE", "BELOW"], key=f"qe_side_{ticker}")
-        paid = st.number_input("Entry price (cents)", 1, 99, 40, key=f"qe_paid_{ticker}")
-        qty = st.number_input("Contracts", 1, 10000, 1, key=f"qe_qty_{ticker}")
-        fee = st.number_input("Estimated total round-trip fees ($)", 0.0, 1000.0, 0.02, 0.01, key=f"qe_fee_{ticker}")
-        sell_bid = yes_bid if side == "ABOVE" else no_bid
-        if sell_bid is None or not fresh:
-            st.warning("No fresh executable exit quote. Do not rely on this P&L.")
-        else:
-            pnl = ((sell_bid * 100 - paid) / 100) * qty - fee
-            ret = pnl / (paid / 100 * qty) * 100
-            st.metric("Indicative exit P&L", f"${pnl:+.2f}", f"{ret:+.1f}% after estimated fee")
-            st.caption("Exit watch: " + ("Profit available at displayed bid; check depth before selling." if pnl > 0 else "Loss at displayed bid; compare with your predefined risk limit."))
-    with st.expander("📈 Live quote trend · support / resistance", expanded=False):
+    st.markdown("**🔒 STRONG LOCK: NOT VALIDATED** · A high-confidence settlement prediction requires independent forward testing and underlying-price data.")
+    if locked:
+        st.caption(f"Existing historical/strategy LOCK: {locked.get('call','—')} · {locked.get('status','—')}. Not a validated new STRONG LOCK.")
+    if issues:
+        st.caption("⚠️ " + " · ".join(issues))
+    st.caption("Indicators use Kalshi YES quote midpoints, not underlying Oil/Bitcoin candles. This is not a calibrated win probability, a definite win, or a recommendation to buy.")
+    with st.expander("📈 Quote history & experimental trend lines", expanded=True):
         if len(history) >= 3:
-            df = pd.DataFrame({"Time": [v[0] for v in history],
-                               "YES midpoint (¢)": [v[1] * 100 for v in history]})
-            st.line_chart(df.set_index("Time"), height=190)
+            df = pd.DataFrame({"Time":[v[0] for v in history],
+                               "YES midpoint (¢)":[v[1]*100 for v in history]})
+            st.line_chart(df.set_index("Time"), height=225)
             if stats.get("ready"):
-                st.caption(f"Recent quote support {stats['support']*100:.1f}¢ · resistance {stats['resistance']*100:.1f}¢. Not a TradingView candlestick or underlying Oil/BTC price chart.")
+                st.caption(f"Observed quote range: {stats['support']*100:.1f}¢ to {stats['resistance']*100:.1f}¢. These are not underlying-price support/resistance levels.")
         else:
-            st.caption("Waiting for enough live quote observations.")
+            st.info("Collecting quote observations. A TradingView-style underlying candlestick chart requires a separate verified data feed.")
 
 
 # ============================================================
@@ -1985,8 +1972,8 @@ def qe_trade_console(ticker, verified, yes_bid, yes_ask, no_bid, no_ask,
 def live_grid():
     markets, errors = active_markets()
 
-    st.markdown("### 👑 LIVE SCALP & LOCK COMMAND CENTER · PAPER ONLY")
-    st.caption("Oil first · Bitcoin available via tab. Experimental trend signals are not validated BUY/SELL recommendations.")
+    st.markdown("### 👑 LIVE MARKET INTELLIGENCE · PAPER ONLY")
+    st.caption("Oil first · Bitcoin available via selector. Experimental observations are not validated trading recommendations.")
     selected = st.radio(
         "Market", ["🛢️ WTI Oil", "₿ Bitcoin"],
         horizontal=True, label_visibility="collapsed", key="qe_market_selector"
