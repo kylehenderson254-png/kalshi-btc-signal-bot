@@ -2122,14 +2122,8 @@ def qe_btc_chart(frame, strike):
     st.altair_chart(chart.properties(height=430).interactive(), use_container_width=True)
     st.caption("Coinbase BTC-USD 1-minute candles (approximately 30-second refresh). VWAP uses available candle volume and resets with this fetched window. Coinbase price is NOT validated as Kalshi's settlement reference.")
 
-    with st.expander("📉 RSI (14) and MACD (12, 26, 9)", expanded=True):
-        rsi_chart = alt.Chart(data).mark_line(color="#b689ff", strokeWidth=2).encode(x=alt.X("time:T", title=None), y=alt.Y("RSI 14:Q", scale=alt.Scale(domain=[0,100]), title="RSI"))
-        guides = alt.Chart(pd.DataFrame({"level": [30, 70]})).mark_rule(color="#777", strokeDash=[3,4]).encode(y="level:Q")
-        st.altair_chart((rsi_chart + guides).properties(height=135), use_container_width=True)
-        macd_long = data[["time", "MACD", "Signal"]].melt(id_vars="time", var_name="line", value_name="value")
-        lines = alt.Chart(macd_long).mark_line(strokeWidth=2).encode(x=alt.X("time:T", title="Time (UTC)"), y=alt.Y("value:Q", title="MACD"), color=alt.Color("line:N", scale=alt.Scale(domain=["MACD", "Signal"], range=["#28c5ff", "#f6b13c"])))
-        bars = alt.Chart(data).mark_bar(opacity=0.4).encode(x="time:T", y="Histogram:Q")
-        st.altair_chart((lines + bars).properties(height=145), use_container_width=True)
+    # RSI and MACD remain calculated above for the trend summary,
+    # but their separate chart panels are intentionally hidden.
 
 
 st.markdown("""<style>
