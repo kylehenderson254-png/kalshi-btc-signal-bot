@@ -146,10 +146,10 @@ st.markdown(
 
     .quote-box {
         border-radius: 12px;
-        padding: 12px;
+        padding: 7px;
         border: 1px solid;
         text-align: center;
-        min-height: 105px;
+        min-height: 64px;
     }
 
     .above {
@@ -173,7 +173,7 @@ st.markdown(
         background: rgba(111,67,178,.10);
         border: 1px solid rgba(166,119,230,.25);
         border-radius: 12px;
-        padding: 12px;
+        padding: 7px;
     }
 
     div[data-testid="stMetricValue"] {
@@ -1909,7 +1909,7 @@ def qe_indicators(history):
 
 def qe_trade_console(ticker, verified, yes_bid, yes_ask, no_bid, no_ask,
                      remaining, quote_age, history, locked):
-    """Conservative, paper-only settlement intelligence; never an execution signal."""
+    """Compact paper-only decision panel; candles are quote-midpoint OHLC."""
     stats = qe_indicators(history)
     fresh = quote_age is not None and quote_age <= 15
     valid = all(v is not None for v in (yes_bid, yes_ask, no_bid, no_ask))
@@ -1924,44 +1924,87 @@ def qe_trade_console(ticker, verified, yes_bid, yes_ask, no_bid, no_ask,
     bid = yes_bid if direction == "ABOVE" else no_bid if direction == "BELOW" else None
     spread = ask - bid if ask is not None and bid is not None else None
     issues = []
-    if not verified: issues.append("Direction/settlement terms unverified")
-    if not fresh: issues.append("Quotes missing or stale")
-    if not valid: issues.append("Invalid or incomplete bid/ask")
+    if not verified: issues.append("Settlement direction unverified")
+    if not fresh: issues.append("Stale or missing quotes")
+    if not valid: issues.append("Incomplete or crossed quotes")
     if not stats.get("ready"): issues.append("Gathering observations")
-    if direction == "UNCERTAIN": issues.append("Trend and momentum disagree")
+    if direction == "UNCERTAIN": issues.append("Indicators disagree")
     if spread is not None and spread > .05: issues.append("Wide spread")
     if ask is not None and ask >= .80: issues.append("Expensive entry")
     if remaining is None or remaining <= 120: issues.append("Near settlement")
-    if issues:
-        decision = "WAIT / NO ENTRY"
-    else:
-        decision = "PAPER WATCH ONLY"
-    st.markdown("### 👑 MARKET INTELLIGENCE · SETTLEMENT WATCH")
-    a,b,c,d = st.columns(4, gap="small")
-    a.metric("Market outlook", direction)
-    b.metric("Entry assessment", decision)
-    c.metric("Current entry ask", cents(ask))
-    d.metric("Time remaining", f"{remaining//60:02d}:{remaining%60:02d}" if remaining is not None else "—")
-    e,f,g,h = st.columns(4, gap="small")
-    e.metric("Quote trend", stats.get("trend","WARMING"))
-    f.metric("Momentum", stats.get("momentum","—"))
-    g.metric("Quote RSI", f"{stats['rsi']:.0f}" if stats.get("rsi") is not None else "—")
-    h.metric("Bid/ask spread", cents(spread))
-    st.markdown("**🔒 STRONG LOCK: NOT VALIDATED** · A high-confidence settlement prediction requires independent forward testing and underlying-price data.")
-    if locked:
-        st.caption(f"Existing historical/strategy LOCK: {locked.get('call','—')} · {locked.get('status','—')}. Not a validated new STRONG LOCK.")
-    if issues:
-        st.caption("⚠️ " + " · ".join(issues))
-    st.caption("Indicators use Kalshi YES quote midpoints, not underlying Oil/Bitcoin candles. This is not a calibrated win probability, a definite win, or a recommendation to buy.")
-    with st.expander("📈 Quote history & experimental trend lines", expanded=True):
-        if len(history) >= 3:
-            df = pd.DataFrame({"Time":[v[0] for v in history],
-                               "YES midpoint (¢)":[v[1]*100 for v in history]})
-            st.line_chart(df.set_index("Time"), height=225)
-            if stats.get("ready"):
-                st.caption(f"Observed quote range: {stats['support']*100:.1f}¢ to {stats['resistance']*100:.1f}¢. These are not underlying-price support/resistance levels.")
+    status = "WAIT / NO ENTRY" if issues else "PAPER WATCH ONLY"
+
+    chart_col, info_col = st.columns([1.65, 1], gap="medium")
+    with chart_col:
+        st.markdown("**📈 KALSHI QUOTE CANDLES · NOT UNDERLYING OIL PRICES**")
+        bucket = st.selectbox("Quote candle interval", ["10s", "30s", "1min"],
+                              index=1, key="qe_candle_interval",
+                              label_visibility="collapsed")
+        seconds = {"10s": "10s", "30s": "30s", "1min": "1min"}[bucket]
+        points = [(v[0], float(v[1])*100) for v in history
+                  if len(v) >= 2 and v[0] is not None and v[1] is not None]
+        if len(points) >= 3:
+            frame = pd.DataFrame(points, columns=["time", "mid"])
+            frame["time"] = pd.to_datetime(frame["time"], utc=True)
+            frame = frame.drop_duplicates("time").sort_values("time").set_index("time")
+            ohlc = frame["mid"].resample(seconds).ohlc().dropna()
+            if not ohlc.empty:
+                try:
+                    import plotly.graph_objects as go
+                    fig = go.Figure(go.Candlestick(
+                        x=ohlc.index, open=ohlc["open"], high=ohlc["high"],
+                        low=ohlc["low"], close=ohlc["close"],
+                        increasing_line_color="#32e0b4",
+                        decreasing_line_color="#ff557b", name="YES quote midpoint"))
+                    if len(ohlc) >= 3:
+                        # Visual guide from the first and last close; not a validated trend line.
+                        fig.add_trace(go.Scatter(
+                            x=[ohlc.index[0], ohlc.index[-1]],
+                            y=[ohlc["close"].iloc[0], ohlc["close"].iloc[-1]],
+                            mode="lines", name="Observed direction",
+                            line=dict(color="#bb70ff", width=1, dash="dot")))
+                    fig.update_layout(
+                        height=310, margin=dict(l=5,r=5,t=8,b=5),
+                        paper_bgcolor="#0b091a", plot_bgcolor="#0b091a",
+                        font=dict(color="#ddd0ff"), showlegend=False,
+                        xaxis_rangeslider_visible=False,
+                        yaxis_title="YES midpoint (¢)",
+                        xaxis=dict(gridcolor="#302343"),
+                        yaxis=dict(gridcolor="#302343"))
+                    st.plotly_chart(fig, use_container_width=True,
+                                    config={"displayModeBar":False},
+                                    key="qe_quote_candles")
+                except ImportError:
+                    st.line_chart(frame["mid"], height=285)
+                    st.caption("Install plotly to enable candlesticks; line-chart fallback shown.")
+            else:
+                st.info("Waiting for candle data.")
         else:
-            st.info("Collecting quote observations. A TradingView-style underlying candlestick chart requires a separate verified data feed.")
+            st.info("Collecting quote snapshots for the candlestick chart.")
+        st.caption("These candles summarize Kalshi YES bid/ask midpoints, not Oil or Bitcoin spot/futures prices. "
+                   "No exchange volume or actual underlying-price target line is implied.")
+    with info_col:
+        st.markdown("**👑 MARKET OUTLOOK · 15-MIN SETTLEMENT**")
+        st.metric("Direction (experimental)", direction)
+        st.metric("Entry assessment", status)
+        a,b = st.columns(2)
+        a.metric("Entry ask", cents(ask))
+        b.metric("Spread", cents(spread))
+        a,b = st.columns(2)
+        a.metric("Time left", f"{remaining//60:02d}:{remaining%60:02d}" if remaining is not None else "—")
+        b.metric("Risk", "ELEVATED" if issues else "UNVALIDATED")
+        st.markdown("**🔒 STRONG LOCK · NOT CONFIRMED**")
+        st.caption("No guaranteed wins; independent forward testing required.")
+        if issues:
+            st.caption("⚠️ " + " · ".join(issues))
+    with st.expander("🧠 Experimental indicators & strategy details", expanded=False):
+        a,b,c = st.columns(3)
+        a.metric("Quote trend", stats.get("trend", "WARMING"))
+        b.metric("Momentum", stats.get("momentum", "—"))
+        c.metric("Quote RSI", f"{stats['rsi']:.0f}" if stats.get("rsi") is not None else "—")
+        if locked:
+            st.caption(f"Existing LOCK tracker: {locked.get('call','—')} · {locked.get('status','—')}")
+        st.caption("Quote-based indicators are not calibrated settlement probabilities or trading recommendations.")
 
 
 # ============================================================
@@ -1972,8 +2015,8 @@ def qe_trade_console(ticker, verified, yes_bid, yes_ask, no_bid, no_ask,
 def live_grid():
     markets, errors = active_markets()
 
-    st.markdown("### 👑 LIVE MARKET INTELLIGENCE · PAPER ONLY")
-    st.caption("Oil first · Bitcoin available via selector. Experimental observations are not validated trading recommendations.")
+    st.markdown("#### 👑 LIVE MARKET INTELLIGENCE · PAPER ONLY")
+    st.caption("Oil primary · Bitcoin selector · Paper-only experimental observations")
     selected = st.radio(
         "Market", ["🛢️ WTI Oil", "₿ Bitcoin"],
         horizontal=True, label_visibility="collapsed", key="qe_market_selector"
