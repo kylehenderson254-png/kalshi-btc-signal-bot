@@ -6,7 +6,7 @@ Read-only Kalshi dashboard. All entries are paper-only.
 
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import base64
@@ -1000,7 +1000,9 @@ def update_history(ticker, name, mid):
             (now, mid, "YES midpoint")
         )
 
-        del history[:-120]
+        # Retain a bounded in-session history long enough for the 15-minute view.
+        cutoff = now - timedelta(minutes=65)
+        history[:] = [row for row in history if row[0] >= cutoff][-4500:]
 
     if len(history) < 3:
         return "Warming up"
@@ -1963,16 +1965,26 @@ def qe_trade_console(ticker, verified, yes_bid, yes_ask, no_bid, no_ask,
                             y=[ohlc["close"].iloc[0], ohlc["close"].iloc[-1]],
                             mode="lines", name="Observed direction",
                             line=dict(color="#bb70ff", width=1, dash="dot")))
+                    # Use a fixed 15-minute time window even when only a few
+                    # observations exist: prevents giant, stretched candles.
+                    from datetime import timedelta as _qe_timedelta
+                    end_time = frame.index.max().to_pydatetime()
+                    start_time = end_time - _qe_timedelta(minutes=15)
                     fig.update_layout(
+                        uirevision=f"qe-{ticker}-{bucket}",
+                        dragmode="pan",
                         height=310, margin=dict(l=5,r=5,t=8,b=5),
                         paper_bgcolor="#0b091a", plot_bgcolor="#0b091a",
                         font=dict(color="#ddd0ff"), showlegend=False,
                         xaxis_rangeslider_visible=False,
                         yaxis_title="YES midpoint (¢)",
-                        xaxis=dict(gridcolor="#302343"),
-                        yaxis=dict(gridcolor="#302343"))
+                        xaxis=dict(gridcolor="#302343",
+                                   range=[start_time, end_time + _qe_timedelta(seconds=15)],
+                                   fixedrange=False),
+                        yaxis=dict(gridcolor="#302343", fixedrange=False))
                     st.plotly_chart(fig, use_container_width=True,
-                                    config={"displayModeBar":False},
+                                    config={"displayModeBar":False, "scrollZoom":True,
+                                            "doubleClick":"reset"},
                                     key="qe_quote_candles")
                 except ImportError:
                     st.line_chart(frame["mid"], height=285)
@@ -1981,6 +1993,8 @@ def qe_trade_console(ticker, verified, yes_bid, yes_ask, no_bid, no_ask,
                 st.info("Waiting for candle data.")
         else:
             st.info("Collecting quote snapshots for the candlestick chart.")
+        st.caption("15-minute default window · Scroll over chart to zoom · Drag to pan. "
+                   "If only a few quotes have been collected, most of the window will be empty.")
         st.caption("These candles summarize Kalshi YES bid/ask midpoints, not Oil or Bitcoin spot/futures prices. "
                    "No exchange volume or actual underlying-price target line is implied.")
     with info_col:
