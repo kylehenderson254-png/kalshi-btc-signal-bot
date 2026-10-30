@@ -2133,6 +2133,70 @@ st.markdown("""<style>
 [data-testid="stMetric"]:has([data-testid="stMetricLabel"]:is(*)) {overflow:hidden}
 </style>""", unsafe_allow_html=True)
 
+def qe_visible_signal_panel(market, series):
+    # Display existing recorded calls, without synthesizing confirmed signals.
+    from html import escape
+    if not market:
+        st.info("Waiting for an active Bitcoin contract and verified quotes.")
+        return
+    ticker = market.get("ticker", series)
+    verified = verified_direction(market)
+    yes_bid, yes_ask = quote(market, "yes", "bid"), quote(market, "yes", "ask")
+    no_bid, no_ask = quote(market, "no", "bid"), quote(market, "no", "ask")
+    mid = midpoint(market)
+    age_stamp = st.session_state["last_good_times"].get(series)
+    fresh = age_stamp is not None and time.time() - age_stamp <= 15
+    quotes_valid = (fresh and all(v is not None and 0 <= v <= 1 for v in
+                   (yes_bid, yes_ask, no_bid, no_ask)) and
+                   yes_bid <= yes_ask and no_bid <= no_ask)
+    def price_card(label, bid, ask, bg, border, color):
+        def display(v):
+            return cents(v) if quotes_valid else "—"
+        st.markdown(f'''<div style="background:{bg};border:2px solid {border};
+          border-radius:16px;padding:16px 12px;text-align:center;color:{color};min-height:112px">
+          <div style="font-weight:900;font-size:1.15rem">{label}</div>
+          <div style="font-size:1rem;margin-top:9px">BID <b>{display(bid)}</b> &nbsp; ASK <b>{display(ask)}</b></div>
+          </div>''', unsafe_allow_html=True)
+    a,b=st.columns(2)
+    with a:
+        price_card("🟢 YES / ABOVE",yes_bid,yes_ask,"#103b2b","#27dc8d","#b3ffdb")
+    with b:
+        price_card("🔴 NO / BELOW",no_bid,no_ask,"#4b1827","#ff5778","#ffd0da")
+    if not quotes_valid:
+        st.warning("Contract quotes missing or stale — directional assessment paused.")
+    if not verified or not quotes_valid or mid is None:
+        lean="NEUTRAL · UNVERIFIED"
+    elif mid >= .60:
+        lean="ABOVE (market-price lean)"
+    elif mid <= .40:
+        lean="BELOW (market-price lean)"
+    else:
+        lean="NEUTRAL"
+    early=early_map.get(ticker)
+    locked=locked_map.get(ticker)
+    close=parse_time(market.get("close_time") or market.get("latest_expiration_time"))
+    remaining=(close-datetime.now(timezone.utc)).total_seconds() if close else None
+    # Mid-call is observational only; no separate confirmed mid-call record exists here.
+    if remaining is None or remaining <= 0:
+        mid_call="Cycle ended / awaiting rollover"
+    elif not quotes_valid or not verified:
+        mid_call="WAIT · quotes/rules unverified"
+    elif remaining > 450:
+        mid_call="Awaiting mid-cycle window"
+    else:
+        mid_call=f"{lean} · provisional, not locked"
+    early_text=str(early.get("call") or "Awaiting signal") if early else "Awaiting signal"
+    locked_text=(f"{locked.get('call', '—')} · {locked.get('status', '—')}"
+                 if locked else "Awaiting verified lock")
+    st.markdown("#### 🎯 Bitcoin prediction status · paper only")
+    c1,c2,c3,c4=st.columns(4)
+    c1.metric("Market lean",lean)
+    c2.metric("🌅 Early Call",early_text)
+    c3.metric("🕒 Mid Call",mid_call)
+    c4.metric("🔒 Locked Call",locked_text)
+    st.caption("Market lean reflects Kalshi YES contract pricing, not a guaranteed Bitcoin outcome. Mid Call is a provisional display, not a saved strategy signal. Recorded Early/Locked calls are unchanged. No real orders.")
+
+
 @st.fragment(run_every="5s")
 def live_grid():
     markets, errors = active_markets()
@@ -2140,6 +2204,7 @@ def live_grid():
     market = markets.get(series)
     st.markdown("### 👑 BITCOIN COMMAND CENTER · PAPER MODE")
     qe_compact_summary(name, series, market, errors)
+    qe_visible_signal_panel(market, series)
     strike = None
     if market:
         strike = next((number(market.get(k)) for k in
