@@ -1,18 +1,20 @@
 
-"""QUEEN'S EDGE | 254 — Live BTC Chart + Directional Reversal Watch.
+"""QUEEN'S EDGE | 254 — Clean Streaming Bitcoin Chart.
 
-Clean and Advanced chart modes.
-Directional bullish/bearish reversal markers.
-Coinbase BTC spot is indicative, not Kalshi settlement data.
-PAPER ONLY — no orders.
+Clean Mode: main chart, EMA 9/21, target and reversal arrows.
+Advanced Mode: optional volume, RSI, MACD and extra indicators.
+
+Coinbase prices are indicative, not Kalshi settlement data.
+PAPER ONLY — this module never places orders.
 """
 
 import json
 import math
+
 import streamlit.components.v1 as components
 
 
-def render_live_chart(target=None, height=740):
+def render_live_chart(target=None, height=510):
     try:
         strike = float(target) if target is not None else None
         if strike is not None and not math.isfinite(strike):
@@ -26,101 +28,267 @@ def render_live_chart(target=None, height=740):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+
 <style>
 *{box-sizing:border-box}
-body{margin:0;background:#0b091b;color:#eee5ff;font:12px system-ui,Segoe UI,Arial,sans-serif}
-#summary{display:flex;gap:8px;flex-wrap:wrap;padding:8px;background:#160f2c;border:1px solid #654098;border-radius:12px}
-.tile{min-width:135px;flex:1;background:#23163c;border-radius:8px;padding:8px}
-.muted{color:#b9a5d4;font-size:11px}
-.value{font-size:17px;font-weight:750;margin-top:4px}
-#toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0}
-button{cursor:pointer;background:#25183d;color:#eee5ff;border:1px solid #654098;border-radius:8px;padding:7px 12px;font-weight:650}
-button.active{background:#55318c;border-color:#a77aff}
-#extras{display:none;flex-wrap:wrap;gap:7px;margin-bottom:8px}
-label{cursor:pointer;background:#24183d;border:1px solid #543779;border-radius:8px;padding:6px 8px;white-space:nowrap}
+
+html,body{
+ margin:0;
+ padding:0;
+ background:#0b091b;
+ color:#eee5ff;
+ font:12px system-ui,Segoe UI,Arial,sans-serif;
+ overflow-x:hidden;
+}
+
+#summary{
+ display:flex;
+ gap:8px;
+ flex-wrap:wrap;
+ padding:8px;
+ background:#160f2c;
+ border:1px solid #654098;
+ border-radius:12px;
+}
+
+.tile{
+ min-width:130px;
+ flex:1;
+ background:#23163c;
+ border-radius:8px;
+ padding:8px;
+}
+
+.muted{
+ color:#b9a5d4;
+ font-size:11px;
+}
+
+.value{
+ font-size:17px;
+ font-weight:750;
+ margin-top:4px;
+}
+
+#toolbar{
+ display:flex;
+ flex-wrap:wrap;
+ gap:8px;
+ align-items:center;
+ margin:9px 0;
+}
+
+button{
+ cursor:pointer;
+ background:#25183d;
+ color:#eee5ff;
+ border:1px solid #654098;
+ border-radius:8px;
+ padding:7px 12px;
+ font-weight:650;
+}
+
+button.active{
+ background:#55318c;
+ border-color:#a77aff;
+}
+
+#extras{
+ display:none;
+ flex-wrap:wrap;
+ gap:7px;
+ margin-bottom:8px;
+}
+
+label{
+ cursor:pointer;
+ background:#24183d;
+ border:1px solid #543779;
+ border-radius:8px;
+ padding:6px 8px;
+ white-space:nowrap;
+}
+
 input{accent-color:#b77dff}
-.panel{border:1px solid #513478;border-radius:10px;overflow:hidden;margin-bottom:7px;position:relative}
-.panelTitle{position:absolute;top:7px;left:9px;z-index:2;background:#110d22d9;border-radius:4px;padding:3px 7px;color:#d9c5ff;pointer-events:none}
+
+.panel{
+ border:1px solid #513478;
+ border-radius:10px;
+ overflow:hidden;
+ margin-bottom:7px;
+ position:relative;
+}
+
+.panelTitle{
+ position:absolute;
+ top:7px;
+ left:9px;
+ z-index:2;
+ background:#110d22d9;
+ border-radius:4px;
+ padding:3px 7px;
+ color:#d9c5ff;
+ pointer-events:none;
+}
+
 #main{height:355px}
 #volume{height:78px}
 #rsi{height:105px}
 #macd{height:105px}
-#legend{display:flex;flex-wrap:wrap;gap:12px;color:#cbb5e8;margin:8px 2px}
-#notice{padding:10px;border:1px solid #694b84;border-radius:8px;color:#ffcb83;background:#1d1430;line-height:1.5;font-weight:650}
-#help{color:#bda9d5;line-height:1.5;padding:7px 2px}
+
+.optionalPanel{display:none}
+
+#legend{
+ display:flex;
+ flex-wrap:wrap;
+ gap:10px;
+ color:#cbb5e8;
+ margin:7px 2px;
+ font-size:11px;
+}
+
+#notice{
+ padding:9px 10px;
+ border:1px solid #694b84;
+ border-radius:8px;
+ color:#ffcb83;
+ background:#1d1430;
+ line-height:1.4;
+ font-weight:650;
+ margin-top:5px;
+}
+
+#help{
+ color:#bda9d5;
+ line-height:1.45;
+ padding:7px 2px 2px;
+ font-size:11px;
+}
+
 </style>
 </head>
+
 <body>
 
 <div id="summary">
-<div class="tile"><div class="muted">BTC/USD · Coinbase spot</div><div class="value" id="price">Connecting…</div></div>
-<div class="tile"><div class="muted">Kalshi target · snapshot</div><div class="value" id="target">—</div></div>
-<div class="tile"><div class="muted">Distance to target</div><div class="value" id="distance">—</div></div>
-<div class="tile"><div class="muted">EMA 9 / EMA 21</div><div class="value" id="trend">Collecting…</div></div>
-<div class="tile"><div class="muted">Feed</div><div class="value" id="status">Connecting…</div></div>
+ <div class="tile">
+  <div class="muted">BTC/USD · Coinbase spot</div>
+  <div class="value" id="price">Connecting…</div>
+ </div>
+
+ <div class="tile">
+  <div class="muted">Kalshi target · snapshot</div>
+  <div class="value" id="target">—</div>
+ </div>
+
+ <div class="tile">
+  <div class="muted">Distance to target</div>
+  <div class="value" id="distance">—</div>
+ </div>
+
+ <div class="tile">
+  <div class="muted">EMA 9 / EMA 21</div>
+  <div class="value" id="trend">Collecting…</div>
+ </div>
+
+ <div class="tile">
+  <div class="muted">Feed</div>
+  <div class="value" id="status">Connecting…</div>
+ </div>
 </div>
 
 <div id="toolbar">
-<button id="clean" class="active">✓ CLEAN MODE</button>
-<button id="advanced">ADVANCED MODE</button>
-<span class="muted">Clean: candles + EMA 9/21 + target + volume + RSI + reversal watch</span>
+ <button id="clean" class="active">✓ CLEAN MODE</button>
+ <button id="advanced">ADVANCED MODE</button>
+ <span class="muted" id="modeDescription">
+  Main chart · EMA 9/21 · target · reversal arrows
+ </span>
 </div>
 
 <div id="extras">
-<label><input type="checkbox" data-key="ema50"> EMA 50</label>
-<label><input type="checkbox" data-key="vwap"> VWAP</label>
-<label><input type="checkbox" data-key="bb"> Bollinger</label>
-<label><input type="checkbox" data-key="levels"> Support / resistance</label>
-<label><input type="checkbox" data-key="macd"> MACD</label>
-<label><input type="checkbox" data-key="markers" checked> Reversal watch</label>
+ <label><input type="checkbox" data-key="volume"> Volume</label>
+ <label><input type="checkbox" data-key="rsi"> RSI (14)</label>
+ <label><input type="checkbox" data-key="macd"> MACD</label>
+ <label><input type="checkbox" data-key="ema50"> EMA 50</label>
+ <label><input type="checkbox" data-key="vwap"> VWAP</label>
+ <label><input type="checkbox" data-key="bb"> Bollinger</label>
+ <label><input type="checkbox" data-key="levels"> Support / resistance</label>
+ <label><input type="checkbox" data-key="markers" checked> Reversal arrows</label>
 </div>
 
 <div class="panel">
-<div class="panelTitle">BTC · 1-minute candles / Kalshi target</div>
-<div id="main"></div>
+ <div class="panelTitle">
+  BTC · 1-minute candles / Kalshi target
+ </div>
+ <div id="main"></div>
 </div>
 
-<div class="panel">
-<div class="panelTitle">Coinbase BTC trading volume · 1 minute</div>
-<div id="volume"></div>
+<div class="panel optionalPanel" id="volumePanel">
+ <div class="panelTitle">
+  Coinbase BTC trading volume · 1 minute
+ </div>
+ <div id="volume"></div>
 </div>
 
-<div class="panel">
-<div class="panelTitle">RSI (14) · momentum · 70 / 30</div>
-<div id="rsi"></div>
+<div class="panel optionalPanel" id="rsiPanel">
+ <div class="panelTitle">
+  RSI (14) · momentum · 70 / 30
+ </div>
+ <div id="rsi"></div>
 </div>
 
-<div class="panel" id="macdPanel" style="display:none">
-<div class="panelTitle">MACD (12, 26, 9)</div>
-<div id="macd"></div>
+<div class="panel optionalPanel" id="macdPanel">
+ <div class="panelTitle">
+  MACD (12, 26, 9)
+ </div>
+ <div id="macd"></div>
 </div>
 
 <div id="legend">
-<span>🟣 EMA 9 · fast trend</span>
-<span>🔵 EMA 21 · slower trend</span>
-<span>🟡 Kalshi target</span>
-<span style="color:#75f2be">▲ WATCH UP · possible bullish reversal</span>
-<span style="color:#ff91a9">▼ WATCH DOWN · possible bearish reversal</span>
+ <span>🟣 EMA 9</span>
+ <span>🔵 EMA 21</span>
+ <span>🟡 Kalshi target</span>
+ <span style="color:#75f2be">▲ WATCH UP</span>
+ <span style="color:#ff91a9">▼ WATCH DOWN</span>
 </div>
 
-<div id="notice">WAIT · Monitoring for possible reversals. No validated trade entry.</div>
-<div id="help">Reversal arrows show possible direction, not certainty. UP means potential upward movement; DOWN means potential downward movement. The live chart is separate from V3's server-side candle feed. Coinbase spot is not Kalshi's verified settlement reference.</div>
+<div id="notice">
+ WAIT · Monitoring possible reversals. No validated trade entry.
+</div>
+
+<div id="help">
+ Reversal arrows are experimental warnings, not guaranteed predictions.
+ RSI, MACD and volume calculations remain available when their panels
+ are hidden. Coinbase spot is not Kalshi's verified settlement price.
+</div>
 
 <script>
 const TARGET=__TARGET__;
 const $=id=>document.getElementById(id);
 
-const fmt=x=>Number.isFinite(x)?x.toLocaleString('en-US',{
- style:'currency',currency:'USD',minimumFractionDigits:2
-}):'—';
+const fmt=x=>Number.isFinite(x)
+ ?x.toLocaleString('en-US',{
+   style:'currency',
+   currency:'USD',
+   minimumFractionDigits:2
+  })
+ :'—';
 
-$('target').textContent=TARGET===null?'Unavailable':fmt(TARGET);
+$('target').textContent=
+ TARGET===null?'Unavailable':fmt(TARGET);
 
 const flags={
- ema50:false,vwap:false,bb:false,
- levels:false,macd:false,markers:true
+ volume:false,
+ rsi:false,
+ macd:false,
+ ema50:false,
+ vwap:false,
+ bb:false,
+ levels:false,
+ markers:true
 };
 
+let advancedMode=false;
 let bars=[];
 let lastTick=0;
 let socket=null;
@@ -128,33 +296,67 @@ let retry=1000;
 let charts=[];
 let series={};
 let calculationTimer=null;
-let connecting=false;
 let reconnectTimer=null;
 
 const bg='#0b091b';
 const fg='#cbb8e6';
 const grid='#281e3c';
 
+function resizeFrame(){
+ const h=Math.ceil(
+  document.documentElement.scrollHeight+4
+ );
+
+ try{
+  window.parent.postMessage({
+   isStreamlitMessage:true,
+   type:'streamlit:setFrameHeight',
+   height:h
+  },'*');
+ }catch(e){}
+}
+
+function requestResize(){
+ requestAnimationFrame(()=>{
+  requestAnimationFrame(resizeFrame);
+ });
+}
+
 function chartFor(id){
  const e=$(id);
+
  const chart=LightweightCharts.createChart(e,{
-  width:e.clientWidth,
+  width:Math.max(1,e.clientWidth),
   height:e.clientHeight,
-  layout:{background:{color:bg},textColor:fg},
-  grid:{vertLines:{color:grid},horzLines:{color:grid}},
-  rightPriceScale:{borderColor:'#513478'},
+  layout:{
+   background:{color:bg},
+   textColor:fg
+  },
+  grid:{
+   vertLines:{color:grid},
+   horzLines:{color:grid}
+  },
+  rightPriceScale:{
+   borderColor:'#513478'
+  },
   timeScale:{
    timeVisible:true,
    secondsVisible:false,
    borderColor:'#513478'
   },
-  crosshair:{mode:LightweightCharts.CrosshairMode.Normal}
+  crosshair:{
+   mode:LightweightCharts.CrosshairMode.Normal
+  }
  });
 
- new ResizeObserver(()=>chart.applyOptions({
-  width:e.clientWidth,
-  height:e.clientHeight
- })).observe(e);
+ new ResizeObserver(()=>{
+  if(e.clientWidth>0){
+   chart.applyOptions({
+    width:e.clientWidth,
+    height:e.clientHeight
+   });
+  }
+ }).observe(e);
 
  charts.push(chart);
  return chart;
@@ -183,13 +385,19 @@ function ema(values,n){
  if(values.length<n)return out;
 
  let seed=0;
- for(let i=0;i<n;i++)seed+=values[i];
+
+ for(let i=0;i<n;i++){
+  seed+=values[i];
+ }
+
  out[n-1]=seed/n;
 
  const k=2/(n+1);
+
  for(let i=n;i<values.length;i++){
   out[i]=out[i-1]+k*(values[i]-out[i-1]);
  }
+
  return out;
 }
 
@@ -197,7 +405,9 @@ function rsi(values,n=14){
  const out=Array(values.length).fill(null);
  if(values.length<=n)return out;
 
- let gain=0,loss=0;
+ let gain=0;
+ let loss=0;
+
  for(let i=1;i<=n;i++){
   const d=values[i]-values[i-1];
   gain+=Math.max(0,d);
@@ -206,14 +416,22 @@ function rsi(values,n=14){
 
  gain/=n;
  loss/=n;
- out[n]=loss===0?(gain===0?50:100):100-100/(1+gain/loss);
+
+ out[n]=loss===0
+  ?(gain===0?50:100)
+  :100-100/(1+gain/loss);
 
  for(let i=n+1;i<values.length;i++){
   const d=values[i]-values[i-1];
+
   gain=(gain*(n-1)+Math.max(0,d))/n;
   loss=(loss*(n-1)+Math.max(0,-d))/n;
-  out[i]=loss===0?(gain===0?50:100):100-100/(1+gain/loss);
+
+  out[i]=loss===0
+   ?(gain===0?50:100)
+   :100-100/(1+gain/loss);
  }
+
  return out;
 }
 
@@ -223,11 +441,13 @@ function macd(values){
 
  const m=values.map((_,i)=>
   fast[i]===null||slow[i]===null
-   ?null:fast[i]-slow[i]
+   ?null
+   :fast[i]-slow[i]
  );
 
  const valid=m.filter(x=>x!==null);
  const signalValid=ema(valid,9);
+
  const signal=Array(values.length).fill(null);
  const hist=Array(values.length).fill(null);
 
@@ -251,33 +471,43 @@ function bollinger(values,n=20){
   const sd=Math.sqrt(
    a.reduce((x,y)=>x+(y-mean)**2,0)/n
   );
+
   high[i]=mean+2*sd;
   low[i]=mean-2*sd;
  }
+
  return {high,low};
 }
 
 function vwap(){
  const out=[];
- let day='',pv=0,vol=0;
+ let day='';
+ let pv=0;
+ let vol=0;
 
  for(const b of bars){
-  const d=new Date(b.time*1000).toISOString().slice(0,10);
+  const d=new Date(b.time*1000)
+   .toISOString().slice(0,10);
+
   if(d!==day){
    day=d;
    pv=0;
    vol=0;
   }
+
   const q=Math.max(0,b.volume||0);
   pv+=(b.high+b.low+b.close)/3*q;
   vol+=q;
+
   out.push(vol?pv/vol:null);
  }
+
  return out;
 }
 
 function levels(n=35){
- const low=[],high=[];
+ const low=[];
+ const high=[];
 
  for(let i=0;i<bars.length;i++){
   if(i<n){
@@ -285,10 +515,13 @@ function levels(n=35){
    high.push(null);
    continue;
   }
+
   const a=bars.slice(i-n,i);
+
   low.push(Math.min(...a.map(x=>x.low)));
   high.push(Math.max(...a.map(x=>x.high)));
  }
+
  return {low,high};
 }
 
@@ -303,14 +536,27 @@ function updatePrice(price){
 
  if(TARGET!==null){
   const distance=price-TARGET;
+
   $('distance').textContent=
    (distance>=0?'+':'')+fmt(distance);
+
   $('distance').style.color=
    distance>=0?'#75f2be':'#ff91a9';
  }
 }
 
-function applyFlags(){
+function syncPanels(){
+ const panelFlags={
+  volume:'volumePanel',
+  rsi:'rsiPanel',
+  macd:'macdPanel'
+ };
+
+ for(const [key,id] of Object.entries(panelFlags)){
+  $(id).style.display=
+   advancedMode&&flags[key]?'block':'none';
+ }
+
  const groups={
   ema50:['ema50'],
   vwap:['vwap'],
@@ -321,33 +567,35 @@ function applyFlags(){
  for(const [key,names] of Object.entries(groups)){
   for(const name of names){
    if(series[name]){
-    series[name].applyOptions({visible:flags[key]});
+    series[name].applyOptions({
+     visible:advancedMode&&flags[key]
+    });
    }
   }
  }
-
- $('macdPanel').style.display=flags.macd?'block':'none';
 
  if(series.candles){
   series.candles.setMarkers(
    flags.markers?(series.markers||[]):[]
   );
  }
+
+ requestResize();
 }
 
 /*
  Directional reversal watch.
 
- These are historical and current heuristic warnings.
- They are NOT validated forecasts.
+ Uses only the current and preceding bars for each
+ historical marker. Does not look ahead.
 
- DOWN:
- Price above target, approaching target,
- bearish EMA alignment, weakening MACD.
+ UP: below target, approaching target, bullish EMA,
+ improving MACD.
 
- UP:
- Price below target, approaching target,
- bullish EMA alignment, improving MACD.
+ DOWN: above target, approaching target, bearish EMA,
+ weakening MACD.
+
+ These are heuristic observations, not validated forecasts.
 */
 function detectReversals(close,e9,e21,rv,mc){
  const markers=[];
@@ -367,7 +615,8 @@ function detectReversals(close,e9,e21,rv,mc){
    Math.max(40,close[i]*0.001);
 
   const toward=
-   (close[i]-TARGET)*(close[i]-close[i-3])<0;
+   (close[i]-TARGET)*
+   (close[i]-close[i-3])<0;
 
   const bearish=
    close[i]>TARGET&&
@@ -388,13 +637,15 @@ function detectReversals(close,e9,e21,rv,mc){
    bars[i].time-markers[markers.length-1].time<480
   )continue;
 
+  const direction=bearish?'DOWN':'UP';
+
   markers.push({
    time:bars[i].time,
    position:bearish?'aboveBar':'belowBar',
    color:bearish?'#ff547c':'#25d9a4',
    shape:bearish?'arrowDown':'arrowUp',
    text:bearish?'WATCH ↓ DOWN':'WATCH ↑ UP',
-   direction:bearish?'DOWN':'UP'
+   direction
   });
  }
 
@@ -406,18 +657,21 @@ function updateReversalNotice(markers){
 
  if(!bars.length){
   notice.textContent='WAIT · Collecting chart data.';
+  notice.style.color='#ffcb83';
   return;
  }
 
  if(lastTick&&Date.now()-lastTick>20000){
   notice.textContent=
-   'DATA STALE · Reversal direction unavailable until live feed resumes.';
+   'DATA STALE · Waiting for live trades before evaluating new warnings.';
   notice.style.color='#ffcb83';
   return;
  }
 
  const lastBar=bars[bars.length-1];
- const latest=markers.length?markers[markers.length-1]:null;
+ const latest=markers.length
+  ?markers[markers.length-1]
+  :null;
 
  const recent=
   latest&&latest.time>=lastBar.time-180;
@@ -431,11 +685,11 @@ function updateReversalNotice(markers){
 
  if(latest.direction==='UP'){
   notice.textContent=
-   '▲ REVERSAL WATCH · POSSIBLE UPWARD MOVE · Bullish momentum is developing near the target. Not a confirmed trade.';
+   '▲ REVERSAL WATCH · POSSIBLE UPWARD MOVE · Bullish conditions detected near the target. Not a confirmed trade.';
   notice.style.color='#75f2be';
  }else{
   notice.textContent=
-   '▼ REVERSAL WATCH · POSSIBLE DOWNWARD MOVE · Bearish momentum is developing near the target. Not a confirmed trade.';
+   '▼ REVERSAL WATCH · POSSIBLE DOWNWARD MOVE · Bearish conditions detected near the target. Not a confirmed trade.';
   notice.style.color='#ff91a9';
  }
 }
@@ -444,6 +698,7 @@ function calculate(){
  if(!bars.length)return;
 
  const close=bars.map(b=>b.close);
+
  const e9=ema(close,9);
  const e21=ema(close,21);
  const e50=ema(close,50);
@@ -482,28 +737,41 @@ function calculate(){
  series.volume.setData(bars.map(b=>({
   time:b.time,
   value:b.volume||0,
-  color:b.close>=b.open?'#2bb88d':'#cc5079'
+  color:b.close>=b.open
+   ?'#2bb88d'
+   :'#cc5079'
  })));
 
  series.hist.setData(bars.map((b,i)=>({
   time:b.time,
   value:mc.hist[i]||0,
-  color:(mc.hist[i]||0)>=0?'#2bb88d':'#cc5079'
+  color:(mc.hist[i]||0)>=0
+   ?'#2bb88d'
+   :'#cc5079'
  })));
 
  const last=close.length-1;
 
- if(e9[last]!==null&&e21[last]!==null){
+ if(
+  e9[last]!==null&&
+  e21[last]!==null
+ ){
   const upward=e9[last]>e21[last];
-  $('trend').textContent=upward?'UPWARD':'DOWNWARD';
+
+  $('trend').textContent=
+   upward?'UPWARD':'DOWNWARD';
+
   $('trend').style.color=
    upward?'#75f2be':'#ff91a9';
  }
 
- const markers=detectReversals(close,e9,e21,rv,mc);
+ const markers=detectReversals(
+  close,e9,e21,rv,mc
+ );
+
  series.markers=markers;
 
- applyFlags();
+ syncPanels();
  updateReversalNotice(markers);
 }
 
@@ -545,6 +813,7 @@ function onTrade(price,time,quantity){
      close:old.close,
      volume:0
     });
+
     old=bars[bars.length-1];
    }
   }
@@ -600,12 +869,14 @@ async function load(){
   );
 
   bars=bars.slice(-360);
+
   calculate();
 
   if(bars.length){
    updatePrice(bars[bars.length-1].close);
    charts[0].timeScale().fitContent();
   }
+
  }catch(error){
   $('notice').textContent=
    'Historical candle data unavailable. Indicators may be incomplete.';
@@ -624,16 +895,12 @@ function reconnect(){
 }
 
 function connect(){
- if(connecting)return;
- connecting=true;
-
  try{
   socket=new WebSocket(
    'wss://ws-feed.exchange.coinbase.com'
   );
 
   socket.onopen=()=>{
-   connecting=false;
    retry=1000;
 
    socket.send(JSON.stringify({
@@ -680,13 +947,11 @@ function connect(){
   };
 
   socket.onclose=()=>{
-   connecting=false;
    setStatus('RECONNECTING');
    reconnect();
   };
 
  }catch(error){
-  connecting=false;
   setStatus('UNAVAILABLE');
   reconnect();
  }
@@ -732,15 +997,15 @@ if(window.LightweightCharts){
   });
  }
 
- const vol=chartFor('volume');
+ const volumeChart=chartFor('volume');
 
- series.volume=vol.addHistogramSeries({
+ series.volume=volumeChart.addHistogramSeries({
   priceFormat:{type:'volume'},
   priceScaleId:''
  });
 
- const r=chartFor('rsi');
- series.rsi=line(r,'#bd89ff',2);
+ const rsiChart=chartFor('rsi');
+ series.rsi=line(rsiChart,'#bd89ff',2);
 
  for(const value of [30,70]){
   series.rsi.createPriceLine({
@@ -752,60 +1017,67 @@ if(window.LightweightCharts){
   });
  }
 
- const m=chartFor('macd');
+ const macdChart=chartFor('macd');
 
- series.hist=m.addHistogramSeries({
+ series.hist=macdChart.addHistogramSeries({
   priceLineVisible:false,
   lastValueVisible:false
  });
 
- series.macd=line(m,'#6bb4ff',2);
- series.signal=line(m,'#ffac69',2);
+ series.macd=line(macdChart,'#6bb4ff',2);
+ series.signal=line(macdChart,'#ffac69',2);
 
  for(const chart of charts.slice(1)){
-  main.timeScale().subscribeVisibleLogicalRangeChange(range=>{
-   if(range){
-    chart.timeScale().setVisibleLogicalRange(range);
+  main.timeScale().subscribeVisibleLogicalRangeChange(
+   range=>{
+    if(range){
+     chart.timeScale().setVisibleLogicalRange(range);
+    }
    }
-  });
+  );
  }
 
  $('clean').onclick=()=>{
+  advancedMode=false;
+
   $('clean').classList.add('active');
   $('advanced').classList.remove('active');
+
   $('extras').style.display='none';
 
-  Object.keys(flags).forEach(key=>{
-   flags[key]=false;
-  });
+  $('modeDescription').textContent=
+   'Main chart · EMA 9/21 · target · reversal arrows';
 
-  flags.markers=true;
-
-  document.querySelectorAll('input[data-key]').forEach(input=>{
-   input.checked=input.dataset.key==='markers';
-  });
-
-  applyFlags();
+  syncPanels();
  };
 
  $('advanced').onclick=()=>{
+  advancedMode=true;
+
   $('advanced').classList.add('active');
   $('clean').classList.remove('active');
+
   $('extras').style.display='flex';
+
+  $('modeDescription').textContent=
+   'Choose which extra charts and indicators to display';
+
+  syncPanels();
  };
 
  document.querySelectorAll('input[data-key]').forEach(input=>{
   input.addEventListener('change',()=>{
    flags[input.dataset.key]=input.checked;
-   applyFlags();
+   syncPanels();
   });
  });
 
- applyFlags();
+ syncPanels();
  load().then(connect);
 
 }else{
  setStatus('CHART LIBRARY UNAVAILABLE');
+
  $('notice').textContent=
   'Chart library unavailable; original backup remains.';
 }
@@ -816,6 +1088,16 @@ setInterval(()=>{
   updateReversalNotice(series.markers||[]);
  }
 },5000);
+
+window.addEventListener('load',requestResize);
+window.addEventListener('resize',requestResize);
+
+if(window.ResizeObserver){
+ new ResizeObserver(requestResize)
+  .observe(document.body);
+}
+
+requestResize();
 
 </script>
 </body>
