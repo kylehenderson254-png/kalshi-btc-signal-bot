@@ -1,149 +1,64 @@
 
+"""QUEEN'S EDGE | 254 — V3 preview launcher. NO REAL ORDERS.
+Keep queens_original.py and queens_live_chart.py beside this file.
+Deploy ONLY to queens-edge-preview, never production main.
 """
-QUEEN'S EDGE | 254
-LIVE BITCOIN COMMAND CENTER — PREVIEW
-
-Preserves the original dashboard, strategy engines,
-Supabase history, paper tracking, and safety controls.
-
-Runs on queens-edge-preview.
-NO REAL TRADING.
-"""
-
 from pathlib import Path
-
 import streamlit as st
 from queens_live_chart import render_live_chart
-
-
-# ============================================================
-# ORIGINAL DASHBOARD
-# ============================================================
+from queens_v3_guard import render_v3_guard
 
 BASE = Path(__file__).resolve().parent
-ORIGINAL = BASE / "queens_original.py"
-
+ORIGINAL = BASE / 'queens_original.py'
 if not ORIGINAL.is_file():
-    st.error(
-        "Missing queens_original.py. "
-        "Keep the original dashboard file in the "
-        "same GitHub folder as app.py."
-    )
+    st.error('Missing queens_original.py in the same folder as app.py')
     st.stop()
+source = ORIGINAL.read_text(encoding='utf-8')
 
-source = ORIGINAL.read_text(encoding="utf-8")
+
+def replace_once(before, after, label):
+    global source
+    if source.count(before) != 1:
+        st.error(f'V3 compatibility check failed: {label}. Original dashboard was not modified.')
+        st.stop()
+    source = source.replace(before, after, 1)
 
 
-# ============================================================
-# UPGRADE 1 — LIVE BITCOIN STREAMING CHART
-# ============================================================
-
-old_chart = (
-    '    st.markdown("#### 📈 Live Bitcoin price action")\n'
-    '    frame = btc_candles()\n'
-    '    qe_btc_chart(frame, strike)'
+replace_once(
+    'c.metric("Indicative distance", f"${abs(delta):,.2f}", "ABOVE" if delta > 0 else "BELOW" if delta < 0 else "AT TARGET")',
+    'c.metric("Indicative distance", f"${abs(delta):,.2f}", "ABOVE" if delta > 0 else "BELOW" if delta < 0 else "AT TARGET", delta_color="off")',
+    'distance-arrow correction',
 )
-
-new_chart = (
-    '    st.markdown('
-    '"#### 📈 LIVE BITCOIN · STREAMING CHART")\n'
-    '    render_live_chart(strike)\n\n'
-    '    with st.expander('
-    '"📉 Original historical chart · Backup", '
-    'expanded=False):\n'
+replace_once(
+    'side = st.radio("Side", ["YES", "NO"], horizontal=True, key=f"qe_calc_side_{series}")',
+    'side = st.radio("Side · manual paper calculator", ["NONE", "YES", "NO"], horizontal=True, key=f"qe_calc_side_{series}")',
+    'paper calculator default NONE',
+)
+replace_once(
+    'ask = yes_ask if side == "YES" else no_ask',
+    'ask = yes_ask if side == "YES" else no_ask if side == "NO" else None',
+    'paper calculator no-side safety',
+)
+replace_once(
+    '    st.markdown("#### 📈 Live Bitcoin price action")\n    frame = btc_candles()\n    qe_btc_chart(frame, strike)',
+    '    render_v3_guard(market, strike, qe_indicative_btc(),\n'
+    '        (parse_time(market.get("close_time") or market.get("latest_expiration_time")) - datetime.now(timezone.utc)).total_seconds()\n'
+    '        if market and parse_time(market.get("close_time") or market.get("latest_expiration_time")) else None,\n'
+    '        verified_direction(market) if market else False, quote, btc_candles, bool(errors.get(series)))\n'
+    '    st.markdown("#### 📈 LIVE BITCOIN · STREAMING CHART")\n'
+    '    render_live_chart(strike)\n'
+    '    with st.expander("📉 Original historical chart · Backup", expanded=False):\n'
     '        frame = btc_candles()\n'
-    '        qe_btc_chart(frame, strike)'
+    '        qe_btc_chart(frame, strike)',
+    'live chart and selective V3 panel',
 )
-
-if old_chart not in source:
-    st.error(
-        "Live chart upgrade could not locate the "
-        "original chart section. No original files "
-        "were changed."
-    )
-    st.stop()
-
-source = source.replace(old_chart, new_chart, 1)
-
-
-# ============================================================
-# UPGRADE 2 — PAPER CALCULATOR DEFAULTS TO NONE
-# ============================================================
-
-old_side = (
-    'st.radio("Side", ["YES", "NO"], '
-    'horizontal=True, key=f"qe_calc_side_{series}")'
-)
-
-new_side = (
-    'st.radio('
-    '"Side · manual paper calculator", '
-    '["NONE", "YES", "NO"], '
-    'horizontal=True, '
-    'key=f"qe_calc_side_{series}")'
-)
-
-old_ask = 'ask = yes_ask if side == "YES" else no_ask'
-
-new_ask = (
-    'ask = ('
-    'yes_ask if side == "YES" '
-    'else no_ask if side == "NO" '
-    'else None)'
-)
-
-if old_side not in source or old_ask not in source:
-    st.error(
-        "Calculator upgrade could not locate the "
-        "original calculator section. No original "
-        "files were changed."
-    )
-    st.stop()
-
-source = source.replace(old_side, new_side, 1)
-source = source.replace(old_ask, new_ask, 1)
-
-
-# ============================================================
-# UPGRADE 3 — FIX LIVE CHART FUNCTION CONNECTION
-# ============================================================
-
-# The original app is executed with its own namespace.
-# The chart function MUST be included in that namespace.
-# Otherwise the live chart crashes with NameError.
-
+# Preserve original code, trackers, and Supabase; execute in a namespace
+# with the preview-only chart and assessment functions available.
 app_globals = {
-    "__name__": "__main__",
-    "__file__": str(ORIGINAL),
-    "__package__": None,
-    "render_live_chart": render_live_chart,
+    '__name__': '__main__',
+    '__file__': str(ORIGINAL),
+    '__package__': None,
+    'render_live_chart': render_live_chart,
+    'render_v3_guard': render_v3_guard,
 }
-
-
-# ============================================================
-# START COMPLETE QUEEN'S EDGE DASHBOARD
-# ============================================================
-
-# Everything else remains in the original application:
-#
-# - Queen's Edge branding
-# - Kalshi 15-minute Bitcoin contracts
-# - Early Call and Locked Call
-# - Strong LOCK and Dual Strong LOCK
-# - V2 Shadow tracking
-# - Supabase history and grading
-# - Paper performance
-# - Pressure radar
-# - Existing safety console
-#
-# The chart streams separately in the browser.
-# No real trades are executed.
-
-exec(
-    compile(
-        source,
-        str(ORIGINAL),
-        "exec",
-    ),
-    app_globals,
-)
+exec(compile(source, str(ORIGINAL), 'exec'), app_globals)
