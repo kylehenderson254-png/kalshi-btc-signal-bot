@@ -1,21 +1,20 @@
 
-"""QUEEN'S EDGE | 254 — V3 Selective Gate + Clock Diagnostics.
+"""QUEEN'S EDGE | 254 — V3 Selective Gate + Feed Health.
 
-Experimental paper-only observation gate.
+PAPER ONLY. No order placement.
 
-Features:
-- Fresh Coinbase REST candle request
+Uses:
+- Coinbase standard 1-minute candles
+- Coinbase explicit-window candle request
 - Original dashboard candle fallback
-- Server UTC clock diagnostics
-- Coinbase HTTP Date clock diagnostics
-- Candle timestamps and age comparisons
-- Safe SKIP when data cannot be verified
+- Coinbase latest-trade freshness cross-check
+- UTC clock and HTTP cache diagnostics
 
-No real orders are ever placed.
-Coinbase spot is not Kalshi's verified settlement reference.
+A fresh trade does NOT make stale candles usable.
+Coinbase is not the Kalshi settlement reference.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 import math
 import time
@@ -35,11 +34,23 @@ COINBASE_URL = (
     "products/BTC-USD/candles"
 )
 
+TRADE_URL = (
+    "https://api.exchange.coinbase.com/"
+    "products/BTC-USD/trades"
+)
+
+HEADERS = {
+    "Accept": "application/json",
+    "Cache-Control": "no-cache, no-store, max-age=0",
+    "Pragma": "no-cache",
+    "User-Agent": "QueensEdge254-PaperResearch/1.1",
+}
+
 
 def _finite(value):
     try:
-        result = float(value)
-        return result if math.isfinite(result) else None
+        number = float(value)
+        return number if math.isfinite(number) else None
     except (TypeError, ValueError):
         return None
 
@@ -60,12 +71,26 @@ def _utc(value):
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
 
-        return value.astimezone(
-            timezone.utc
-        ).strftime("%Y-%m-%d %H:%M:%S UTC")
-
+        return value.astimezone(timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
     except Exception:
         return "UNAVAILABLE"
+
+
+def _parse_http_date(value):
+    if not value:
+        return None
+
+    try:
+        result = parsedate_to_datetime(value)
+
+        if result.tzinfo is None:
+            result = result.replace(tzinfo=timezone.utc)
+
+        return result.astimezone(timezone.utc)
+    except Exception:
+        return None
 
 
 def _result(status, reasons=None, **extra):
@@ -102,37 +127,44 @@ def _clean_candles(candles):
 
     required = ("time", "close", "high", "low")
 
-    if any(x not in df.columns for x in required):
+    if any(col not in df.columns for col in required):
         return pd.DataFrame()
 
-    raw_time = df["time"]
+    raw = df["time"]
 
-    if pd.api.types.is_numeric_dtype(raw_time):
-        parsed = pd.to_datetime(
-            raw_time,
-            unit="s",
+    if pd.api.types.is_numeric_dtype(raw):
+        numeric = pd.to_numeric(raw, errors="coerce")
+        sample = numeric.dropna()
+
+        if len(sample) == 0:
+            return pd.DataFrame()
+
+        # Support both Unix seconds and Unix milliseconds.
+        unit = "ms" if sample.median() > 1e11 else "s"
+
+        df["time"] = pd.to_datetime(
+            numeric,
+            unit=unit,
             utc=True,
             errors="coerce",
         )
     else:
-        parsed = pd.to_datetime(
-            raw_time,
+        df["time"] = pd.to_datetime(
+            raw,
             utc=True,
             errors="coerce",
         )
 
-    df["time"] = parsed
-
-    for column in ("close", "high", "low"):
-        df[column] = pd.to_numeric(
-            df[column],
+    for col in ("close", "high", "low"):
+        df[col] = pd.to_numeric(
+            df[col],
             errors="coerce",
         )
 
     df = (
         df.dropna(subset=list(required))
         .sort_values("time")
-        .drop_duplicates(subset=["time"], keep="last")
+        .drop_duplicates("time", keep="last")
         .reset_index(drop=True)
     )
 
@@ -151,7 +183,11 @@ def _age(df, reference_time=None):
         return None
 
     try:
-        now = reference_time or datetime.now(timezone.utc)
+        now = (
+            reference_time
+            if reference_time is not None
+            else datetime.now(timezone.utc)
+        )
 
         if isinstance(now, pd.Timestamp):
             now = now.to_pydatetime()
@@ -159,7 +195,6 @@ def _age(df, reference_time=None):
         latest = df["time"].iloc[-1].to_pydatetime()
 
         return (now - latest).total_seconds()
-
     except Exception:
         return None
 
@@ -170,56 +205,65 @@ def _fresh(df):
 
     age = _age(df)
 
-    return (
-        age is not None
-        and -15 <= age <= MAX_CANDLE_AGE
-    )
+    if age is None or not -15 <= age <= MAX_CANDLE_AGE:
+        return False
+
+    # Make sure the series actually contains recent
+    # consecutive minute observations, not only an
+    # isolated current timestamp.
+    recent = df["time"].tail(5)
+
+    if len(recent) < 5:
+        return False
+
+    gaps = recent.diff().dropna().dt.total_seconds()
+
+    if gaps.empty or (gaps > 120).any():
+        return False
+
+    return True
 
 
-def _parse_http_date(value):
-    if not value:
-        return None
+@st.cache_data(ttl=10, show_spinner=False)
+def fetch_coinbase_with_clock(mode="recent", bucket=None):
+    """Fetch Coinbase 1-minute OHLCV.
 
-    try:
-        parsed = parsedate_to_datetime(value)
-
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-
-        return parsed.astimezone(timezone.utc)
-
-    except Exception:
-        return None
-
-
-@st.cache_data(ttl=12, show_spinner=False)
-def fetch_coinbase_with_clock():
-    """Fetch candles and capture response-clock diagnostics.
-
-    The response is cached briefly, but freshness is always
-    checked again using the current server time.
+    Two request shapes may reveal intermediary caching.
+    They are NOT independent market-data providers.
     """
 
-    start_wall = datetime.now(timezone.utc)
-    start_mono = time.monotonic()
+    started = datetime.now(timezone.utc)
+    monotonic_start = time.monotonic()
+
+    params = {"granularity": 60}
+
+    if mode == "window":
+        end = (
+            started.replace(second=0, microsecond=0)
+            + timedelta(minutes=1)
+        )
+        start = end - timedelta(minutes=180)
+
+        params.update({
+            "start": start.isoformat().replace(
+                "+00:00", "Z"
+            ),
+            "end": end.isoformat().replace(
+                "+00:00", "Z"
+            ),
+        })
 
     response = requests.get(
         COINBASE_URL,
-        params={"granularity": 60},
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "QueensEdge254-PaperResearch/1.0",
-        },
+        params=params,
+        headers=HEADERS,
         timeout=8,
     )
 
-    elapsed = time.monotonic() - start_mono
     received = datetime.now(timezone.utc)
+    elapsed = time.monotonic() - monotonic_start
 
     response.raise_for_status()
-
-    http_date_raw = response.headers.get("Date")
-    http_date = _parse_http_date(http_date_raw)
 
     payload = response.json()
 
@@ -249,71 +293,156 @@ def fetch_coinbase_with_clock():
         except (TypeError, ValueError):
             continue
 
-    if not rows:
-        raise ValueError(
-            "Coinbase returned no usable candles"
-        )
+    df = _clean_candles(
+        pd.DataFrame(rows)
+    ) if rows else pd.DataFrame()
 
-    df = _clean_candles(pd.DataFrame(rows))
-
-    clock = {
-        "request_started": start_wall,
+    details = {
+        "mode": mode,
+        "request_started": started,
         "response_received": received,
         "request_seconds": elapsed,
-        "http_date": http_date,
-        "http_date_raw": http_date_raw,
+        "http_date": _parse_http_date(
+            response.headers.get("Date")
+        ),
+        "http_date_raw": response.headers.get("Date"),
+        "cache_age": response.headers.get(
+            "Age", "not supplied"
+        ),
         "row_count": len(df),
         "latest_candle": (
             df["time"].iloc[-1].to_pydatetime()
-            if len(df)
-            else None
+            if len(df) else None
         ),
         "earliest_candle": (
             df["time"].iloc[0].to_pydatetime()
-            if len(df)
-            else None
+            if len(df) else None
         ),
     }
 
-    return df, clock
+    return df, details
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def fetch_latest_trade(bucket=None):
+    """Cross-check current market data.
+
+    Trade timestamps are diagnostic only.
+    They cannot validate old candle history.
+    """
+
+    started = datetime.now(timezone.utc)
+
+    response = requests.get(
+        TRADE_URL,
+        params={"limit": 1},
+        headers=HEADERS,
+        timeout=8,
+    )
+
+    received = datetime.now(timezone.utc)
+    response.raise_for_status()
+
+    trades = response.json()
+
+    if not isinstance(trades, list) or not trades:
+        raise ValueError(
+            "Coinbase returned no recent trades"
+        )
+
+    trade = trades[0]
+
+    stamp = pd.to_datetime(
+        trade.get("time"),
+        utc=True,
+        errors="coerce",
+    )
+
+    if pd.isna(stamp):
+        raise ValueError(
+            "Latest trade timestamp unavailable"
+        )
+
+    trade_time = stamp.to_pydatetime()
+
+    return {
+        "trade_time": trade_time,
+        "trade_age": (
+            received - trade_time
+        ).total_seconds(),
+        "request_started": started,
+        "response_received": received,
+        "http_date": _parse_http_date(
+            response.headers.get("Date")
+        ),
+    }
 
 
 def _get_candles(candle_fn):
     candidates = []
     errors = []
+
     clock = {
         "server_now": datetime.now(timezone.utc),
         "coinbase": None,
+        "alternate": None,
+        "trade": None,
+        "trade_error": None,
         "original_latest": None,
         "original_age": None,
     }
 
-    try:
-        fresh_df, cb_clock = fetch_coinbase_with_clock()
-        clock["coinbase"] = cb_clock
+    bucket = int(time.time() // 10)
 
-        age = _age(fresh_df)
-
-        if _fresh(fresh_df):
-            candidates.append((
-                "Coinbase REST · 1-minute candles",
-                fresh_df,
-            ))
-        else:
-            errors.append(
-                "Coinbase REST candles not fresh"
-                + (
-                    f" ({age:.0f}s old)"
-                    if age is not None
-                    else ""
-                )
+    for mode, label, field in (
+        (
+            "recent",
+            "Coinbase REST · standard request",
+            "coinbase",
+        ),
+        (
+            "window",
+            "Coinbase REST · explicit time window",
+            "alternate",
+        ),
+    ):
+        try:
+            df, details = fetch_coinbase_with_clock(
+                mode, bucket
             )
 
+            clock[field] = details
+            age = _age(df)
+
+            if _fresh(df):
+                candidates.append((label, df))
+            else:
+                age_text = (
+                    f"{age:.0f}s old"
+                    if age is not None
+                    else "unknown age"
+                )
+
+                errors.append(
+                    f"{label} not fresh "
+                    f"({age_text}, {len(df)} candles)"
+                )
+
+        except Exception as exc:
+            errors.append(
+                f"{label} error: {exc}"
+            )
+
+    try:
+        clock["trade"] = fetch_latest_trade(bucket)
     except Exception as exc:
+        clock["trade_error"] = str(exc)
+
         errors.append(
-            f"Coinbase REST error: {exc}"
+            f"Latest-trade cross-check unavailable: {exc}"
         )
 
+    # Retain the original candle feed as a fallback.
     try:
         original_df = _clean_candles(candle_fn())
 
@@ -353,12 +482,17 @@ def _get_candles(candle_fn):
     if candidates:
         source, df = max(
             candidates,
-            key=lambda x: x[1]["time"].iloc[-1],
+            key=lambda item: item[1]["time"].iloc[-1],
         )
 
         return df, source, errors, clock
 
-    return None, "NO FRESH CANDLE SOURCE", errors, clock
+    return (
+        None,
+        "NO FRESH CANDLE SOURCE",
+        errors,
+        clock,
+    )
 
 
 def assess(
@@ -381,7 +515,7 @@ def assess(
 
     if not market or not verified:
         issues.append(
-            "Contract or settlement mapping unverified"
+            "Contract or YES/NO settlement mapping unverified"
         )
 
     if quote_stale:
@@ -391,7 +525,7 @@ def assess(
 
     if strike is None or spot is None:
         issues.append(
-            "Target or indicative spot unavailable"
+            "Target or indicative spot price unavailable"
         )
 
     if seconds_left is None:
@@ -451,6 +585,11 @@ def assess(
             f"({candle_age:.0f}s old)"
         )
 
+    if not _fresh(df):
+        issues.append(
+            "Candle freshness or continuity check failed"
+        )
+
     close = df["close"]
 
     ema9 = close.ewm(
@@ -486,7 +625,9 @@ def assess(
             "RSI calculation unavailable"
         )
     elif latest_loss == 0:
-        rsi = 100.0 if latest_gain > 0 else 50.0
+        rsi = (
+            100.0 if latest_gain > 0 else 50.0
+        )
     else:
         rsi = 100 - (
             100 / (1 + latest_gain / latest_loss)
@@ -500,6 +641,7 @@ def assess(
         direction = None
 
     distance = abs(spot - strike)
+
     minimum_distance = max(
         50.0,
         spot * 0.0007,
@@ -655,108 +797,140 @@ def _show_clock_diagnostics(clock):
         "**🕒 Candle Clock Diagnostics**"
     )
 
-    server_now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
 
     st.write(
         "**Streamlit server UTC now:**",
-        _utc(server_now),
+        _utc(now),
     )
 
-    cb = clock.get("coinbase")
+    for field, heading in (
+        (
+            "coinbase",
+            "Coinbase standard candles",
+        ),
+        (
+            "alternate",
+            "Coinbase explicit-window candles",
+        ),
+    ):
+        details = clock.get(field)
 
-    if cb:
-        st.write(
-            "**Coinbase request started:**",
-            _utc(cb.get("request_started")),
-        )
+        st.markdown(f"**{heading}**")
 
-        st.write(
-            "**Coinbase response received:**",
-            _utc(cb.get("response_received")),
-        )
-
-        st.write(
-            "**Coinbase HTTP Date header:**",
-            _utc(cb.get("http_date")),
-        )
-
-        st.write(
-            "**Latest Coinbase candle:**",
-            _utc(cb.get("latest_candle")),
-        )
-
-        st.write(
-            "**Earliest Coinbase candle:**",
-            _utc(cb.get("earliest_candle")),
-        )
-
-        st.write(
-            "**Coinbase candle count:**",
-            cb.get("row_count"),
-        )
-
-        request_seconds = cb.get("request_seconds")
-
-        if request_seconds is not None:
+        if details is None:
             st.write(
-                "**Coinbase request duration:**",
-                f"{request_seconds:.2f}s",
+                "Unavailable / not checked"
             )
+            continue
 
-        latest = cb.get("latest_candle")
+        st.write(
+            "Request started:",
+            _utc(details.get("request_started")),
+        )
+
+        st.write(
+            "Response received:",
+            _utc(details.get("response_received")),
+        )
+
+        st.write(
+            "HTTP Date:",
+            _utc(details.get("http_date")),
+        )
+
+        st.write(
+            "Latest candle:",
+            _utc(details.get("latest_candle")),
+        )
+
+        st.write(
+            "Earliest candle:",
+            _utc(details.get("earliest_candle")),
+        )
+
+        st.write(
+            "Candle count:",
+            details.get("row_count"),
+        )
+
+        st.write(
+            "Request duration:",
+            f"{details.get('request_seconds', 0):.2f}s",
+        )
+
+        st.write(
+            "HTTP Age header:",
+            details.get("cache_age"),
+        )
+
+        latest = details.get("latest_candle")
 
         if latest is not None:
             st.write(
-                "**Latest candle age vs server:**",
-                f"{(server_now - latest).total_seconds():.1f}s",
+                "Latest candle age vs server:",
+                f"{(now - latest).total_seconds():.1f}s",
             )
 
-        http_date = cb.get("http_date")
+        http_date = details.get("http_date")
 
         if http_date is not None:
             st.write(
-                "**Server minus Coinbase HTTP Date:**",
-                f"{(server_now - http_date).total_seconds():.1f}s",
+                "Server minus HTTP Date:",
+                f"{(now - http_date).total_seconds():.1f}s",
             )
 
-            if latest is not None:
-                st.write(
-                    "**HTTP Date minus latest candle:**",
-                    f"{(http_date - latest).total_seconds():.1f}s",
-                )
+    st.markdown(
+        "**Coinbase latest-trade endpoint · cross-check**"
+    )
 
-        st.caption(
-            "HTTP Date may reflect an intermediary or "
-            "cached response. It is not necessarily an "
-            "authoritative Coinbase clock measurement."
+    trade = clock.get("trade")
+
+    if trade:
+        st.write(
+            "Latest trade UTC:",
+            _utc(trade.get("trade_time")),
         )
 
+        st.write(
+            "Latest trade age at request:",
+            f"{trade.get('trade_age', 0):.1f}s",
+        )
+
+        st.write(
+            "Trade response received:",
+            _utc(trade.get("response_received")),
+        )
     else:
         st.write(
-            "**Coinbase clock details:**",
-            "Unavailable — check feed errors below",
+            "Unavailable:",
+            clock.get("trade_error")
+            or "Not checked",
         )
 
-    original_latest = clock.get("original_latest")
+    st.markdown(
+        "**Original dashboard candle feed**"
+    )
 
     st.write(
-        "**Original feed latest candle:**",
-        _utc(original_latest),
+        "Latest candle:",
+        _utc(clock.get("original_latest")),
     )
 
     original_age = clock.get("original_age")
 
     if original_age is not None:
         st.write(
-            "**Original candle age:**",
+            "Candle age:",
             f"{original_age:.1f}s",
         )
 
     st.caption(
-        "Coinbase 1-minute candle timestamps represent "
-        "the START of each minute. A healthy current "
-        "candle may already be 0–60 seconds old. "
-        "The safety threshold remains 180 seconds."
+        "Candle timestamps represent the start "
+        "of each minute. A recent trade does NOT "
+        "make old candles fresh. HTTP Date and "
+        "cache headers may come from intermediaries. "
+        "V3 retains the 180-second safety threshold."
     )
 
 
@@ -790,6 +964,9 @@ def render_v3_guard(
     clock = {
         "server_now": datetime.now(timezone.utc),
         "coinbase": None,
+        "alternate": None,
+        "trade": None,
+        "trade_error": None,
         "original_latest": None,
         "original_age": None,
     }
@@ -823,6 +1000,32 @@ def render_v3_guard(
             f"V3 assessment unavailable: {exc}"
         )
         return
+
+    if not in_window:
+        st.caption(
+            "📡 FEED HEALTH: NOT CHECKED · "
+            "Waiting for 10–3 minute window"
+        )
+
+    elif candles is None:
+        st.error(
+            "📡 FEED HEALTH: STALE / UNAVAILABLE · "
+            "V3 blocked"
+        )
+
+    else:
+        live_age = _age(candles)
+
+        if live_age is not None and _fresh(candles):
+            st.success(
+                f"📡 FEED HEALTH: FRESH · {source} · "
+                f"latest candle {live_age:.0f}s old"
+            )
+        else:
+            st.error(
+                "📡 FEED HEALTH: STALE / UNAVAILABLE · "
+                "V3 blocked"
+            )
 
     status = result["status"]
 
@@ -944,7 +1147,9 @@ def render_v3_guard(
                 st.write(f"• {message}")
 
         if result["reasons"]:
-            st.markdown("**Filter reasons:**")
+            st.markdown(
+                "**Filter reasons:**"
+            )
 
             for reason in result["reasons"]:
                 st.write(f"• {reason}")
