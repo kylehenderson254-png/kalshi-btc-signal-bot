@@ -1,15 +1,15 @@
-"""QUEEN'S EDGE | 254 — preview-only forward paper test.
+"""QUEEN'S EDGE | 254 — compact preview dashboard.
 
-NO REAL ORDERS.
+PAPER ONLY. NO REAL ORDERS.
 
-Keep these files beside app.py:
-- queens_original.py
-- queens_live_chart.py
-- queens_v3_guard.py
+Keep queens_original.py, queens_live_chart.py and
+queens_v3_guard.py beside this file.
 """
 
+import ast
 import json
 import math
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
@@ -31,7 +31,6 @@ API = "https://external-api.kalshi.com/trade-api/v2"
 BUCKET = "queens-edge-paper-v4"
 CT = ZoneInfo("America/Chicago")
 
-# Experimental paper-test settings, not optimized parameters.
 RISK = 5.0
 ENTRY_CAP = 0.70
 SLIPPAGE = 0.01
@@ -53,10 +52,8 @@ def utc(value):
         value = datetime.fromisoformat(
             str(value).replace("Z", "+00:00")
         )
-
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
-
         return value
     except (ValueError, TypeError):
         return None
@@ -68,7 +65,6 @@ def now_utc():
 
 def snapshot_current(quote_at, trade_time):
     now = now_utc()
-
     return (
         -3 <= (now - quote_at).total_seconds() <= 8
         and -3 <= (now - trade_time).total_seconds() <= 10
@@ -76,23 +72,16 @@ def snapshot_current(quote_at, trade_time):
 
 
 def cents_round(value, up=True):
-    rounding = ROUND_CEILING if up else ROUND_FLOOR
-
     return float(
         Decimal(str(value)).quantize(
             Decimal("0.01"),
-            rounding=rounding,
+            rounding=ROUND_CEILING if up else ROUND_FLOOR,
         )
     )
 
 
 def fee(qty, price, multiplier):
-    """
-    Conservative fee estimate for whole-contract,
-    whole-cent assumed fills.
-
-    This is not an account execution or exact fee statement.
-    """
+    # Conservative estimate for whole-contract, whole-cent paper fills.
     model = (
         Decimal("0.07")
         * Decimal(str(multiplier))
@@ -100,7 +89,6 @@ def fee(qty, price, multiplier):
         * Decimal(str(price))
         * (1 - Decimal(str(price)))
     )
-
     return float(
         model.quantize(
             Decimal("0.01"),
@@ -124,21 +112,18 @@ def size_for(price, multiplier):
 
     entry_fee = fee(qty, price, multiplier)
     cost = round(qty * price + entry_fee, 6)
-
     return qty, entry_fee, cost
 
 
 def quote(market, side, kind):
     prefix = "yes" if side == "ABOVE" else "no"
-
     return number(
         market.get(prefix + "_" + kind + "_dollars")
     )
 
 
 def available(market, side, kind):
-    # NO asks mirror YES bids.
-    # NO bids mirror YES asks.
+    # NO asks mirror YES bids; NO bids mirror YES asks.
     if side == "BELOW":
         kind = "bid" if kind == "ask" else "ask"
 
@@ -153,7 +138,6 @@ def public_get(path, fresh=False):
         timeout=7,
         headers={"Cache-Control": "no-cache"},
     )
-
     response.raise_for_status()
 
     if fresh:
@@ -206,7 +190,6 @@ def trade_snapshot():
         "products/BTC-USD/ticker",
         timeout=7,
     )
-
     response.raise_for_status()
     data = response.json()
 
@@ -233,20 +216,14 @@ def trade_snapshot():
 
 
 class PaperJournal:
-    """
-    Private, append-only paper events.
-
-    Existing tracker tables are never edited.
-    """
+    """Private append-only events; old tracker tables are preserved."""
 
     def __init__(self, url, key):
         self.base = url.rstrip("/") + "/storage/v1"
-
         self.headers = {
             "apikey": key,
             "Authorization": "Bearer " + key,
         }
-
         self.cache = {}
 
     def request(
@@ -279,7 +256,6 @@ class PaperJournal:
                 or data.get("error")
                 or ""
             )
-
             status = str(
                 data.get("statusCode", "")
             )
@@ -290,10 +266,7 @@ class PaperJournal:
         if missing and (
             response.status_code == 404
             or status == "404"
-            or code in (
-                "NoSuchKey",
-                "NoSuchBucket",
-            )
+            or code in ("NoSuchKey", "NoSuchBucket")
         ):
             return None
 
@@ -331,7 +304,6 @@ class PaperJournal:
                     "public": False,
                 },
             )
-
             bucket = self.request(
                 "GET",
                 "/bucket/" + BUCKET,
@@ -445,28 +417,10 @@ def journal(url, key):
 
 
 def exit_estimate(entry, market):
-    bid = quote(
-        market,
-        entry["side"],
-        "bid",
-    )
-
-    ask = quote(
-        market,
-        entry["side"],
-        "ask",
-    )
-
-    size = available(
-        market,
-        entry["side"],
-        "bid",
-    )
-
-    slippage = entry.get(
-        "slippage",
-        SLIPPAGE,
-    )
+    bid = quote(market, entry["side"], "bid")
+    ask = quote(market, entry["side"], "ask")
+    size = available(market, entry["side"], "bid")
+    slippage = entry.get("slippage", SLIPPAGE)
 
     if (
         bid is None
@@ -479,10 +433,7 @@ def exit_estimate(entry, market):
 
     price = max(
         0.0,
-        cents_round(
-            bid - slippage,
-            False,
-        ),
+        cents_round(bid - slippage, False),
     )
 
     exit_fee = fee(
@@ -491,17 +442,15 @@ def exit_estimate(entry, market):
         entry["fee_multiplier"],
     )
 
-    pnl = round(
-        entry["qty"] * price
-        - exit_fee
-        - entry["risk"],
-        6,
-    )
-
     return {
         "price": price,
         "fee": exit_fee,
-        "pnl": pnl,
+        "pnl": round(
+            entry["qty"] * price
+            - exit_fee
+            - entry["risk"],
+            6,
+        ),
     }
 
 
@@ -512,19 +461,12 @@ def close_reason(
     trend,
     seconds,
 ):
-    profit_fraction = entry.get(
-        "take_profit_fraction",
-        TAKE_PROFIT,
-    )
-
-    loss_fraction = entry.get(
-        "loss_review_fraction",
-        STOP_REVIEW,
-    )
-
     if (
         estimate["pnl"]
-        >= profit_fraction * entry["risk"]
+        >= entry.get(
+            "take_profit_fraction",
+            TAKE_PROFIT,
+        ) * entry["risk"]
     ):
         return (
             "Experimental profit review: "
@@ -533,36 +475,35 @@ def close_reason(
 
     if (
         estimate["pnl"]
-        <= -loss_fraction * entry["risk"]
+        <= -entry.get(
+            "loss_review_fraction",
+            STOP_REVIEW,
+        ) * entry["risk"]
     ):
         return (
             "Experimental loss review: "
             "-20% of entry risk"
         )
 
-    target_crossed = (
+    if (
         entry["side"] == "ABOVE"
         and spot < entry["target"]
     ) or (
         entry["side"] == "BELOW"
         and spot > entry["target"]
-    )
-
-    if target_crossed:
+    ):
         return (
             "Spot crossed the target "
             "against the position"
         )
 
-    opposing_trend = (
+    if (
         entry["side"] == "ABOVE"
         and trend == "DOWNWARD"
     ) or (
         entry["side"] == "BELOW"
         and trend == "UPWARD"
-    )
-
-    if opposing_trend:
+    ):
         return (
             "Opposing EMA and "
             "momentum confirmation"
@@ -618,8 +559,7 @@ def grade_papers(store, rows):
                     entry["qty"]
                     if win
                     else 0
-                )
-                - entry["risk"],
+                ) - entry["risk"],
                 6,
             )
 
@@ -631,7 +571,7 @@ def grade_papers(store, rows):
                 )
             )
 
-            managed_closed_at = (
+            closed_at = (
                 exit_event["observed_at"]
                 if exit_event
                 else datetime.fromtimestamp(
@@ -656,12 +596,8 @@ def grade_papers(store, rows):
                     if exit_event
                     else "Held to official settlement"
                 ),
-                "managed_closed_at": (
-                    managed_closed_at
-                ),
-                "graded_at": (
-                    now_utc().isoformat()
-                ),
+                "managed_closed_at": closed_at,
+                "graded_at": now_utc().isoformat(),
             }
 
             row["final"] = store.once(
@@ -744,9 +680,7 @@ def candidate(
             "or the spread is wider than 3¢"
         ]
 
-    price = cents_round(
-        ask + SLIPPAGE
-    )
+    price = cents_round(ask + SLIPPAGE)
 
     if not 0 < price <= ENTRY_CAP:
         return None, [
@@ -779,15 +713,9 @@ def candidate(
 
     ranges = pd.concat(
         [
-            (
-                df["high"] - df["low"]
-            ).abs(),
-            (
-                df["high"] - previous
-            ).abs(),
-            (
-                df["low"] - previous
-            ).abs(),
+            (df["high"] - df["low"]).abs(),
+            (df["high"] - previous).abs(),
+            (df["low"] - previous).abs(),
         ],
         axis=1,
     ).max(axis=1)
@@ -841,7 +769,7 @@ def candidate(
     }, []
 
 
-def render_paper_engine(
+def _run_paper_engine(
     market,
     strike,
     spot,
@@ -877,7 +805,6 @@ def render_paper_engine(
     url = st.secrets.get(
         "SUPABASE_URL"
     )
-
     key = st.secrets.get(
         "SUPABASE_SERVICE_ROLE_KEY"
     )
@@ -910,15 +837,10 @@ def render_paper_engine(
             return
 
         rows = store.rows()
-
-        grade_papers(
-            store,
-            rows,
-        )
+        grade_papers(store, rows)
 
         final_rows = [
-            row
-            for row in rows
+            row for row in rows
             if row["final"]
         ]
 
@@ -926,7 +848,6 @@ def render_paper_engine(
             row["final"]["managed_pnl"]
             for row in final_rows
         )
-
         hold = sum(
             row["final"]["hold_pnl"]
             for row in final_rows
@@ -973,17 +894,14 @@ def render_paper_engine(
             "Matched managed P&L",
             f"${managed:+.2f}",
         )
-
         cols[1].metric(
             "Matched settlement P&L",
             f"${hold:+.2f}",
         )
-
         cols[2].metric(
             "Paper entries / official outcomes",
             f"{len(rows)} / {len(final_rows)}",
         )
-
         cols[3].metric(
             "Today · managed realized",
             f"${day_pnl:+.2f}",
@@ -1130,9 +1048,7 @@ def render_paper_engine(
                             )
 
             if enabled:
-                multiplier = (
-                    series_fee()
-                )
+                multiplier = series_fee()
 
                 proposed, reasons = (
                     candidate(
@@ -1203,8 +1119,7 @@ def render_paper_engine(
 
                 else:
                     stamp = (
-                        now_utc()
-                        .timestamp()
+                        now_utc().timestamp()
                     )
 
                     old = (
@@ -1221,7 +1136,7 @@ def render_paper_engine(
                         == proposed["side"]
                     )
 
-                    restart_confirmation = (
+                    restart = (
                         not same
                         or stamp - old["time"] > 45
                         or proposed["distance"]
@@ -1230,7 +1145,7 @@ def render_paper_engine(
                         > old["price"] + .03
                     )
 
-                    if restart_confirmation:
+                    if restart:
                         st.session_state[
                             "qe_v4_confirm"
                         ] = {
@@ -1397,23 +1312,15 @@ def render_paper_engine(
                                 "%m/%d %H:%M:%S"
                             )
                         ),
-                        "Ticker": (
-                            entry["ticker"]
-                        ),
-                        "Side": (
-                            entry["side"]
-                        ),
+                        "Ticker": entry["ticker"],
+                        "Side": entry["side"],
                         "Entry ¢": round(
                             entry["price"] * 100,
                             1,
                         ),
                         "Qty": entry["qty"],
-                        "Entry risk $": (
-                            entry["risk"]
-                        ),
-                        "Fee estimate $": (
-                            entry["fee"]
-                        ),
+                        "Entry risk $": entry["risk"],
+                        "Fee estimate $": entry["fee"],
                         "Break-even": (
                             f"{entry['breakeven']:.1%}"
                         ),
@@ -1477,6 +1384,419 @@ def render_paper_engine(
             "Existing paper events are preserved. "
             "No real orders are placed."
         )
+
+
+def render_paper_engine(*args, **kwargs):
+    # The engine still executes while this panel is closed.
+    with st.expander(
+        "🧪 Paper test · controls, P&L & history",
+        expanded=False,
+    ):
+        _run_paper_engine(*args, **kwargs)
+
+
+def compact_chart_html(html):
+    """
+    Reset old saved Advanced Mode preferences on startup.
+    Extra indicators remain available through Advanced Mode.
+    """
+    html = html.replace(
+        '<div class="panel">',
+        '<div class="panel mainPanel">',
+        1,
+    )
+
+    html = re.sub(
+        r'(<div id="help">.*?</div>)',
+        (
+            r'<details class="qe-notes">'
+            r'<summary>Chart notes · paper only</summary>'
+            r'\1</details>'
+        ),
+        html,
+        count=1,
+        flags=re.S,
+    )
+
+    css = """
+<style>
+html,body{
+ height:100%;
+ min-height:0;
+}
+
+body{
+ display:flex;
+ flex-direction:column;
+ overflow-y:auto;
+}
+
+#summary,
+#toolbar,
+#extras,
+#legend,
+#notice,
+.qe-notes{
+ flex-shrink:0;
+}
+
+.mainPanel{
+ flex:1 0 260px;
+ min-height:260px;
+}
+
+#main{
+ height:100%!important;
+ min-height:258px;
+}
+
+.optionalPanel{
+ flex-shrink:0;
+}
+
+#toolbar{
+ position:sticky;
+ top:0;
+ z-index:20;
+ background:#0b091b;
+ padding:4px 0;
+}
+
+.qe-notes{
+ font-size:10px;
+ color:#bda9d5;
+ padding:5px 2px;
+}
+
+.qe-notes summary{
+ cursor:pointer;
+ color:#bda9d5;
+}
+</style>
+"""
+
+    html = html.replace(
+        "</head>",
+        css + "</head>",
+        1,
+    )
+
+    reset = """
+advancedMode=false;
+
+for(const key of Object.keys(flags)){
+ flags[key]=(key==='markers');
+}
+
+try{
+ sessionStorage.removeItem(settingsKey);
+}catch(e){}
+
+window.scrollTo(0,0);
+
+start();
+requestResize();
+"""
+
+    html, count = re.subn(
+        r"\bstart\(\);\s*requestResize\(\);",
+        lambda match: reset,
+        html,
+        count=1,
+    )
+
+    if count != 1:
+        raise RuntimeError(
+            "Chart compatibility check failed: "
+            "clean-mode startup"
+        )
+
+    return html
+
+
+def clean_chart_renderer(path):
+    """
+    Apply compact display defaults in memory.
+    The queens_live_chart.py file is not overwritten.
+    """
+    tree = ast.parse(
+        path.read_text(encoding="utf-8"),
+        filename=str(path),
+    )
+
+    class CleanFrame(ast.NodeTransformer):
+        count = 0
+
+        def visit_Call(self, node):
+            self.generic_visit(node)
+
+            is_chart_frame = (
+                isinstance(
+                    node.func,
+                    ast.Attribute,
+                )
+                and node.func.attr == "html"
+                and isinstance(
+                    node.func.value,
+                    ast.Name,
+                )
+                and node.func.value.id
+                == "components"
+            )
+
+            if is_chart_frame:
+                if not node.args:
+                    raise RuntimeError(
+                        "Chart compatibility check "
+                        "failed: HTML argument"
+                    )
+
+                node.args[0] = ast.Call(
+                    func=ast.Name(
+                        id="compact_chart_html",
+                        ctx=ast.Load(),
+                    ),
+                    args=[node.args[0]],
+                    keywords=[],
+                )
+
+                for keyword in node.keywords:
+                    if keyword.arg == "height":
+                        keyword.value = ast.Constant(
+                            value=620
+                        )
+
+                    elif keyword.arg == "scrolling":
+                        keyword.value = ast.Constant(
+                            value=True
+                        )
+
+                self.count += 1
+
+            return node
+
+    transform = CleanFrame()
+    tree = transform.visit(tree)
+
+    if transform.count != 1:
+        raise RuntimeError(
+            "Chart compatibility check failed: "
+            "expected one chart frame"
+        )
+
+    namespace = {
+        "__name__": "queens_edge_compact_chart",
+        "__file__": str(path),
+        "compact_chart_html": compact_chart_html,
+    }
+
+    exec(
+        compile(
+            ast.fix_missing_locations(tree),
+            str(path),
+            "exec",
+        ),
+        namespace,
+    )
+
+    return namespace["render_live_chart"]
+
+
+def expander_node(nodes, label):
+    wrapper = ast.With(
+        items=[
+            ast.withitem(
+                context_expr=ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Name(
+                            id="st",
+                            ctx=ast.Load(),
+                        ),
+                        attr="expander",
+                        ctx=ast.Load(),
+                    ),
+                    args=[
+                        ast.Constant(
+                            value=label
+                        )
+                    ],
+                    keywords=[
+                        ast.keyword(
+                            arg="expanded",
+                            value=ast.Constant(
+                                value=False
+                            ),
+                        )
+                    ],
+                ),
+                optional_vars=None,
+            )
+        ],
+        body=nodes,
+        type_comment=None,
+    )
+
+    ast.copy_location(
+        wrapper,
+        nodes[0],
+    )
+
+    wrapper.end_lineno = (
+        nodes[-1].end_lineno
+    )
+
+    wrapper.end_col_offset = (
+        nodes[-1].end_col_offset
+    )
+
+    return wrapper
+
+
+def compact_original(source):
+    """
+    Collapse existing display sections.
+
+    Tracker, strategy and history execution is preserved.
+    queens_original.py is not overwritten.
+    """
+    tree = ast.parse(source)
+
+    grid = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(
+                node,
+                ast.FunctionDef,
+            )
+            and node.name == "live_grid"
+        ),
+        None,
+    )
+
+    if grid is None:
+        raise RuntimeError(
+            "Layout compatibility check "
+            "failed: live_grid"
+        )
+
+    start = None
+    end = None
+
+    for index, node in enumerate(
+        grid.body
+    ):
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(
+                node.value,
+                ast.Call,
+            )
+        ):
+            args = node.value.args
+
+            if (
+                args
+                and isinstance(
+                    args[0],
+                    ast.Constant,
+                )
+                and "Paper auto-trader"
+                in str(args[0].value)
+            ):
+                start = index
+
+        if (
+            start is not None
+            and isinstance(node, ast.With)
+        ):
+            existing_signals = any(
+                isinstance(
+                    item.context_expr,
+                    ast.Call,
+                )
+                and item.context_expr.args
+                and isinstance(
+                    item.context_expr.args[0],
+                    ast.Constant,
+                )
+                and "Existing Bitcoin signals"
+                in str(
+                    item.context_expr.args[0].value
+                )
+                for item in node.items
+            )
+
+            if existing_signals:
+                end = index
+                break
+
+    if start is None or end is None:
+        raise RuntimeError(
+            "Layout compatibility check failed: "
+            "safety-console boundaries"
+        )
+
+    grid.body[start:end] = [
+        expander_node(
+            grid.body[start:end],
+            "🛡️ Safety console · paper only",
+        )
+    ]
+
+    tab_start = None
+    tab_end = None
+
+    for index, node in enumerate(
+        tree.body
+    ):
+        if isinstance(node, ast.Assign):
+            names = {
+                child.id
+                for target in node.targets
+                for child in ast.walk(target)
+                if isinstance(child, ast.Name)
+            }
+
+            if {
+                "overview_tab",
+                "history_tab",
+                "diagnostics_tab",
+            }.issubset(names):
+                tab_start = index
+
+        if (
+            tab_start is not None
+            and isinstance(node, ast.With)
+        ):
+            last_tab = any(
+                isinstance(
+                    item.context_expr,
+                    ast.Name,
+                )
+                and item.context_expr.id
+                == "diagnostics_tab"
+                for item in node.items
+            )
+
+            if last_tab:
+                tab_end = index + 1
+                break
+
+    if tab_start is None or tab_end is None:
+        raise RuntimeError(
+            "Layout compatibility check failed: "
+            "history/performance boundaries"
+        )
+
+    tree.body[tab_start:tab_end] = [
+        expander_node(
+            tree.body[tab_start:tab_end],
+            "📚 Performance, history & diagnostics",
+        )
+    ]
+
+    return ast.fix_missing_locations(tree)
 
 
 def launch():
@@ -1606,18 +1926,44 @@ def launch():
             1,
         )
 
+    chart_path = (
+        original.parent
+        / "queens_live_chart.py"
+    )
+
+    try:
+        chart = clean_chart_renderer(
+            chart_path
+        )
+
+        tree = compact_original(
+            source
+        )
+
+    except (
+        RuntimeError,
+        OSError,
+        SyntaxError,
+    ) as exc:
+        st.error(
+            "Compact-layout compatibility "
+            "check failed: "
+            + str(exc)
+        )
+        st.stop()
+
     namespace = {
         "__name__": "__main__",
         "__file__": str(original),
         "__package__": None,
-        "render_live_chart": render_live_chart,
+        "render_live_chart": chart,
         "render_v3_guard": render_v3_guard,
         "render_paper_engine": render_paper_engine,
     }
 
     exec(
         compile(
-            source,
+            tree,
             str(original),
             "exec",
         ),
