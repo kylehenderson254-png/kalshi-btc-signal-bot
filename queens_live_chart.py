@@ -14,30 +14,44 @@ import streamlit.components.v1 as components
 def render_live_chart(
     target=None, height=510, *, close_time=None, market_ticker=None
 ):
-    """Drop-in chart. Optional close_time must be the official contract close."""
+    """Optional close_time must be the official contract close."""
+
     try:
         strike = float(target) if target is not None else None
-        if strike is not None and (not math.isfinite(strike) or strike <= 0):
-            strike = None
+
+        if strike is not None:
+            if not math.isfinite(strike) or strike <= 0:
+                strike = None
+
     except (TypeError, ValueError, OverflowError):
         strike = None
 
     close_ms = None
+
     try:
         if isinstance(close_time, (int, float)):
             close_ms = float(close_time)
+
             if close_ms < 1_000_000_000_000:
                 close_ms *= 1000
+
         elif close_time is not None:
             dt = close_time
+
             if isinstance(dt, str):
-                dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+                dt = datetime.fromisoformat(
+                    dt.replace("Z", "+00:00")
+                )
+
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
+
             close_ms = dt.timestamp() * 1000
 
-        if close_ms is not None and not math.isfinite(close_ms):
-            close_ms = None
+        if close_ms is not None:
+            if not math.isfinite(close_ms):
+                close_ms = None
+
     except (
         TypeError,
         ValueError,
@@ -198,11 +212,16 @@ input{accent-color:#b77dff}
 #contract{margin-left:auto}
 
 @media(max-width:900px){
- #summary{grid-template-columns:repeat(4,minmax(0,1fr))}
+ #summary{
+  grid-template-columns:repeat(4,minmax(0,1fr));
+ }
 }
 
 @media(max-width:520px){
- #summary{grid-template-columns:repeat(2,minmax(0,1fr))}
+ #summary{
+  grid-template-columns:repeat(2,minmax(0,1fr));
+ }
+
  #main{height:320px}
  #contract{margin-left:0}
 }
@@ -251,27 +270,52 @@ input{accent-color:#b77dff}
 <div id="toolbar">
  <button id="clean" class="active">✓ CLEAN MODE</button>
  <button id="advanced">ADVANCED MODE</button>
- <button id="resetView" title="Follow the latest 60 candles">
+
+ <button id="resetView"
+         title="Follow the latest 60 candles">
   FOLLOW LIVE
  </button>
+
  <span class="muted" id="modeDescription">
   EMA 9/21 · target · reversal arrows
  </span>
+
  <span class="muted" id="contract"></span>
 </div>
 
 <div id="extras">
- <label><input type="checkbox" data-key="volume"> Volume</label>
- <label><input type="checkbox" data-key="rsi"> RSI (14)</label>
- <label><input type="checkbox" data-key="macd"> MACD</label>
- <label><input type="checkbox" data-key="ema50"> EMA 50</label>
- <label><input type="checkbox" data-key="vwap"> VWAP*</label>
- <label><input type="checkbox" data-key="bb"> Bollinger</label>
  <label>
-  <input type="checkbox" data-key="levels"> Support / resistance
+  <input type="checkbox" data-key="volume"> Volume
  </label>
+
  <label>
-  <input type="checkbox" data-key="markers" checked> Reversal arrows
+  <input type="checkbox" data-key="rsi"> RSI (14)
+ </label>
+
+ <label>
+  <input type="checkbox" data-key="macd"> MACD
+ </label>
+
+ <label>
+  <input type="checkbox" data-key="ema50"> EMA 50
+ </label>
+
+ <label>
+  <input type="checkbox" data-key="vwap"> VWAP*
+ </label>
+
+ <label>
+  <input type="checkbox" data-key="bb"> Bollinger
+ </label>
+
+ <label>
+  <input type="checkbox" data-key="levels">
+  Support / resistance
+ </label>
+
+ <label>
+  <input type="checkbox" data-key="markers" checked>
+  Reversal arrows
  </label>
 </div>
 
@@ -290,12 +334,16 @@ input{accent-color:#b77dff}
 </div>
 
 <div class="panel optionalPanel" id="rsiPanel">
- <div class="panelTitle">RSI 14 · 30 / 50 / 70</div>
+ <div class="panelTitle">
+  RSI 14 · 30 / 50 / 70
+ </div>
  <div id="rsi"></div>
 </div>
 
 <div class="panel optionalPanel" id="macdPanel">
- <div class="panelTitle">MACD 12 / 26 / 9</div>
+ <div class="panelTitle">
+  MACD 12 / 26 / 9
+ </div>
  <div id="macd"></div>
 </div>
 
@@ -312,12 +360,13 @@ input{accent-color:#b77dff}
 </div>
 
 <div id="help">
- PAPER ONLY. Warnings are experimental observations, not BUY/SELL
- or settlement-lock confirmations.
- Arrows are evaluated only from when this target snapshot was loaded;
- the current candle can change.
- Target and optional expiry come from the dashboard; this chart does
- not fetch a new Kalshi contract.
+ PAPER ONLY. Warnings are experimental observations,
+ not BUY/SELL or settlement-lock confirmations.
+ WATCH labels mark EMA-slope turns with RSI and MACD confirmation.
+ Historical labels are retrospective chart-pattern matches,
+ not records of live alerts. The current candle can change.
+ Target and optional expiry come from the dashboard;
+ this chart does not fetch a new Kalshi contract.
  Coinbase spot is not Kalshi settlement data.
  *VWAP uses the loaded portion of the UTC day.
  <a href="https://www.tradingview.com/"
@@ -331,6 +380,7 @@ input{accent-color:#b77dff}
 <script>
 const CONFIG=__CONFIG__;
 const TARGET=CONFIG.target;
+
 const $=id=>document.getElementById(id);
 
 const fmt=x=>Number.isFinite(x)
@@ -389,8 +439,6 @@ let cached=null;
 let markers=[];
 let renderedTime=0;
 
-const observedMinute=Math.floor(Date.now()/60000)*60;
-
 const viewKey='queens-edge-254-btc-view-v3';
 const settingsKey='queens-edge-254-chart-settings-v1';
 
@@ -431,7 +479,10 @@ function saveSettings(){
  try{
   sessionStorage.setItem(
    settingsKey,
-   JSON.stringify({advanced:advancedMode,flags})
+   JSON.stringify({
+    advanced:advancedMode,
+    flags
+   })
   );
  }catch(e){}
 }
@@ -520,6 +571,7 @@ function points(values){
 
 function ema(values,n){
  const out=Array(values.length).fill(null);
+
  if(values.length<n)return out;
 
  out[n-1]=values.slice(0,n)
@@ -536,6 +588,7 @@ function ema(values,n){
 
 function rsi(values,n=14){
  const out=Array(values.length).fill(null);
+
  if(values.length<=n)return out;
 
  let gain=0;
@@ -543,6 +596,7 @@ function rsi(values,n=14){
 
  for(let i=1;i<=n;i++){
   const d=values[i]-values[i-1];
+
   gain+=Math.max(0,d)/n;
   loss+=Math.max(0,-d)/n;
  }
@@ -760,86 +814,65 @@ function syncPanels(){
 function detectReversals(close,e9,e21,rv,mc){
  const out=[];
 
- if(TARGET===null||expired())return out;
+ if(expired())return out;
 
  let lastUp=-1000;
  let lastDown=-1000;
 
  for(let i=52;i<bars.length;i++){
-  if(
-   bars[i].time<observedMinute||
-   ![
-    rv[i],
-    rv[i-1],
-    e9[i],
-    e9[i-1],
-    e21[i],
-    mc.hist[i],
-    mc.hist[i-1]
-   ].every(Number.isFinite)
-  )continue;
+  const values=[
+   close[i],
+   close[i-1],
+   e9[i],
+   e9[i-1],
+   e9[i-2],
+   rv[i],
+   rv[i-1],
+   mc.hist[i],
+   mc.hist[i-1]
+  ];
 
-  if(
-   bars[i].time-bars[i-3].time!==180
-  )continue;
+  if(!values.every(Number.isFinite))continue;
 
-  const d=close[i]-TARGET;
-  const prev=close[i-3]-TARGET;
+  if(bars[i].time-bars[i-2].time!==120)continue;
 
-  const near=
-   Math.abs(d)<Math.max(75,close[i]*.0015);
-
-  const toward=
-   Math.abs(d)<Math.abs(prev);
+  const slope=e9[i]-e9[i-1];
+  const previousSlope=e9[i-1]-e9[i-2];
 
   const up=
-   close[i]>close[i-3]&&
-   e9[i]>e9[i-1]&&
+   previousSlope<=0&&
+   slope>0&&
+   close[i]>close[i-1]&&
    rv[i]>rv[i-1]&&
    mc.hist[i]>mc.hist[i-1];
 
   const down=
-   close[i]<close[i-3]&&
-   e9[i]<e9[i-1]&&
+   previousSlope>=0&&
+   slope<0&&
+   close[i]<close[i-1]&&
    rv[i]<rv[i-1]&&
    mc.hist[i]<mc.hist[i-1];
 
-  if(
-   d<0&&
-   near&&
-   toward&&
-   up&&
-   rv[i]>=45&&
-   rv[i]<=72&&
-   i-lastUp>=8
-  ){
+  if(up&&i-lastUp>=5){
    out.push({
     time:bars[i].time,
     position:'belowBar',
     color:'#25d9a4',
     shape:'arrowUp',
-    text:'WATCH ↑ UP',
+    text:'WATCH UP',
     direction:'UP'
    });
 
    lastUp=i;
   }
 
-  if(
-   d>0&&
-   near&&
-   toward&&
-   down&&
-   rv[i]>=28&&
-   rv[i]<=55&&
-   i-lastDown>=8
-  ){
+  if(down&&i-lastDown>=5){
    out.push({
     time:bars[i].time,
     position:'aboveBar',
     color:'#ff547c',
     shape:'arrowDown',
-    text:'WATCH ↓ DOWN',
+    text:'WATCH DOWN',
     direction:'DOWN'
    });
 
@@ -930,7 +963,7 @@ function updateNotice(){
 
    text=
     (up?'▲ WATCH UP':'▼ WATCH DOWN')+
-    ' · Possible momentum turn near the target. '+
+    ' · Possible momentum turn on the 1-minute chart. '+
     'Experimental warning, not a confirmed entry.';
 
    color=up?green:red;
@@ -1002,7 +1035,9 @@ function followLive(){
  restoringView=true;
 
  charts[0].applyOptions({
-  timeScale:{shiftVisibleRangeOnNewBar:true}
+  timeScale:{
+   shiftVisibleRangeOnNewBar:true
+  }
  });
 
  charts[0].timeScale().setVisibleLogicalRange({
@@ -1771,13 +1806,47 @@ requestResize();
 </body>
 </html>'''
 
+    # Keep the live WATCH status above the main chart.
+    notice_start = html.find('<div id="notice"')
+
+    if notice_start >= 0:
+        notice_end = html.find("</div>", notice_start)
+
+        if notice_end >= 0:
+            notice_end += len("</div>")
+
+            notice_html = html[notice_start:notice_end]
+
+            html = (
+                html[:notice_start]
+                + html[notice_end:]
+            )
+
+            html = html.replace(
+                '<div class="panel">',
+                notice_html + '\n<div class="panel">',
+                1,
+            )
+
+    html = html.replace(
+        "</head>",
+        '<style>#notice{margin:8px 0}'
+        '#notice::before{content:"REVERSAL WATCH STATUS";'
+        'display:block;font-size:10px;letter-spacing:1px;'
+        'color:#cbb5e8;margin-bottom:4px}</style></head>',
+        1,
+    )
+
     try:
-        frame_height = max(300, min(2000, int(height)))
+        frame_height = max(
+            680,
+            min(2000, int(height)),
+        )
     except (TypeError, ValueError, OverflowError):
-        frame_height = 510
+        frame_height = 680
 
     components.html(
         html.replace("__CONFIG__", config),
         height=frame_height,
-        scrolling=False,
+        scrolling=True,
     )
