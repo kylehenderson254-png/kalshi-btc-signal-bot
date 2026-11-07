@@ -5,7 +5,6 @@ PAPER ONLY. NO REAL ORDERS.
 Keep queens_original.py, queens_live_chart.py and
 queens_v3_guard.py beside this file.
 """
-
 import ast
 import json
 import math
@@ -20,22 +19,17 @@ import requests
 import streamlit as st
 
 from queens_live_chart import render_live_chart
-from queens_v3_guard import (
-    render_v3_guard,
-    assess,
-    _get_candles,
-)
+from queens_v3_guard import render_v3_guard, assess, _get_candles
 
-
-API = "https://external-api.kalshi.com/trade-api/v2"
-BUCKET = "queens-edge-paper-v4"
-CT = ZoneInfo("America/Chicago")
+API = 'https://external-api.kalshi.com/trade-api/v2'
+BUCKET = 'queens-edge-paper-v4'
+CT = ZoneInfo('America/Chicago')
 
 RISK = 5.0
-ENTRY_CAP = 0.70
+ENTRY_CAP = 0.7
 SLIPPAGE = 0.01
 TAKE_PROFIT = 0.25
-STOP_REVIEW = 0.20
+STOP_REVIEW = 0.2
 DAILY_STOP = 15.0
 
 
@@ -49,9 +43,7 @@ def number(value):
 
 def utc(value):
     try:
-        value = datetime.fromisoformat(
-            str(value).replace("Z", "+00:00")
-        )
+        value = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         return value
@@ -74,26 +66,22 @@ def snapshot_current(quote_at, trade_time):
 def cents_round(value, up=True):
     return float(
         Decimal(str(value)).quantize(
-            Decimal("0.01"),
+            Decimal('0.01'),
             rounding=ROUND_CEILING if up else ROUND_FLOOR,
         )
     )
 
 
 def fee(qty, price, multiplier):
-    # Conservative estimate for whole-contract, whole-cent paper fills.
     model = (
-        Decimal("0.07")
+        Decimal('0.07')
         * Decimal(str(multiplier))
         * qty
         * Decimal(str(price))
         * (1 - Decimal(str(price)))
     )
     return float(
-        model.quantize(
-            Decimal("0.01"),
-            rounding=ROUND_CEILING,
-        )
+        model.quantize(Decimal('0.01'), rounding=ROUND_CEILING)
     )
 
 
@@ -105,8 +93,7 @@ def size_for(price, multiplier):
 
     while (
         qty > 0
-        and qty * price + fee(qty, price, multiplier)
-        > RISK + 1e-9
+        and qty * price + fee(qty, price, multiplier) > RISK + 1e-9
     ):
         qty -= 1
 
@@ -116,36 +103,30 @@ def size_for(price, multiplier):
 
 
 def quote(market, side, kind):
-    prefix = "yes" if side == "ABOVE" else "no"
-    return number(
-        market.get(prefix + "_" + kind + "_dollars")
-    )
+    prefix = 'yes' if side == 'ABOVE' else 'no'
+    return number(market.get(prefix + '_' + kind + '_dollars'))
 
 
 def available(market, side, kind):
     # NO asks mirror YES bids; NO bids mirror YES asks.
-    if side == "BELOW":
-        kind = "bid" if kind == "ask" else "ask"
-
-    return number(
-        market.get("yes_" + kind + "_size_fp")
-    )
+    if side == 'BELOW':
+        kind = 'bid' if kind == 'ask' else 'ask'
+    return number(market.get('yes_' + kind + '_size_fp'))
 
 
 def public_get(path, fresh=False):
     response = requests.get(
         API + path,
         timeout=7,
-        headers={"Cache-Control": "no-cache"},
+        headers={'Cache-Control': 'no-cache'},
     )
     response.raise_for_status()
 
     if fresh:
-        date = response.headers.get("Date")
-
+        date = response.headers.get('Date')
         if not date:
             raise RuntimeError(
-                "Quote response has no verifiable HTTP timestamp"
+                'Quote response has no verifiable HTTP timestamp'
             )
 
         from email.utils import parsedate_to_datetime
@@ -155,30 +136,23 @@ def public_get(path, fresh=False):
         ).total_seconds()
 
         if not -3 <= age <= 12:
-            raise RuntimeError(
-                "Quote response timestamp is stale"
-            )
+            raise RuntimeError('Quote response timestamp is stale')
 
     return response.json()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def series_fee():
-    series = public_get(
-        "/series/KXBTC15M"
-    )["series"]
-
-    multiplier = number(
-        series.get("fee_multiplier")
-    )
+    series = public_get('/series/KXBTC15M')['series']
+    multiplier = number(series.get('fee_multiplier'))
 
     if (
-        series.get("fee_type") != "quadratic"
+        series.get('fee_type') != 'quadratic'
         or multiplier is None
         or multiplier < 0
     ):
         raise RuntimeError(
-            "This paper test cannot model the current series fee type"
+            'This paper test cannot model the current series fee type'
         )
 
     return multiplier
@@ -186,21 +160,15 @@ def series_fee():
 
 def trade_snapshot():
     response = requests.get(
-        "https://api.exchange.coinbase.com/"
-        "products/BTC-USD/ticker",
+        'https://api.exchange.coinbase.com/products/BTC-USD/ticker',
         timeout=7,
     )
     response.raise_for_status()
     data = response.json()
 
-    price = number(data.get("price"))
-    stamp = utc(data.get("time"))
-
-    age = (
-        (now_utc() - stamp).total_seconds()
-        if stamp
-        else None
-    )
+    price = number(data.get('price'))
+    stamp = utc(data.get('time'))
+    age = (now_utc() - stamp).total_seconds() if stamp else None
 
     if (
         price is None
@@ -209,7 +177,7 @@ def trade_snapshot():
         or not -3 <= age <= 10
     ):
         raise RuntimeError(
-            "BTC trade timestamp is stale or unavailable"
+            'BTC trade timestamp is stale or unavailable'
         )
 
     return price, stamp
@@ -219,27 +187,22 @@ class PaperJournal:
     """Private append-only events; old tracker tables are preserved."""
 
     def __init__(self, url, key):
-        self.base = url.rstrip("/") + "/storage/v1"
+        self.base = url.rstrip('/') + '/storage/v1'
         self.headers = {
-            "apikey": key,
-            "Authorization": "Bearer " + key,
+            'apikey': key,
+            'Authorization': 'Bearer ' + key,
         }
         self.cache = {}
 
-    def request(
-        self,
-        method,
-        path,
-        payload=None,
-        missing=False,
-    ):
+    def request(self, method, path, payload=None, missing=False):
         response = requests.request(
             method,
             self.base + path,
             headers={
                 **self.headers,
-                "Content-Type": "application/json",
-                "x-upsert": "false",
+                'Content-Type': 'application/json',
+                'x-upsert': 'false',
+                'Cache-Control': 'no-cache, no-store',
             },
             json=payload,
             timeout=10,
@@ -252,159 +215,153 @@ class PaperJournal:
 
         if isinstance(data, dict):
             code = str(
-                data.get("code")
-                or data.get("error")
-                or ""
+                data.get('code') or data.get('error') or ''
             )
-            status = str(
-                data.get("statusCode", "")
-            )
+            status = str(data.get('statusCode', ''))
         else:
-            code = ""
-            status = ""
+            code = ''
+            status = ''
 
         if missing and (
             response.status_code == 404
-            or status == "404"
-            or code in ("NoSuchKey", "NoSuchBucket")
+            or status == '404'
+            or code in ('NoSuchKey', 'NoSuchBucket')
         ):
             return None
 
         if (
             response.status_code == 409
-            or status == "409"
-            or code == "Duplicate"
+            or status == '409'
+            or code == 'Duplicate'
         ):
-            return {"duplicate": True}
+            return {'duplicate': True}
 
         if not response.ok:
             raise RuntimeError(
-                "Private paper journal request failed "
-                "(HTTP "
+                'Private paper journal request failed (HTTP '
                 + str(response.status_code)
-                + ")"
+                + ')'
             )
 
         return data
 
     def ensure(self, create=False):
         bucket = self.request(
-            "GET",
-            "/bucket/" + BUCKET,
+            'GET',
+            '/bucket/' + BUCKET,
             missing=True,
         )
 
         if bucket is None and create:
             self.request(
-                "POST",
-                "/bucket",
+                'POST',
+                '/bucket',
                 {
-                    "id": BUCKET,
-                    "name": BUCKET,
-                    "public": False,
+                    'id': BUCKET,
+                    'name': BUCKET,
+                    'public': False,
                 },
             )
-            bucket = self.request(
-                "GET",
-                "/bucket/" + BUCKET,
-            )
+            bucket = self.request('GET', '/bucket/' + BUCKET)
 
         if bucket is None:
             return False
 
-        if bucket.get("public") is not False:
+        if bucket.get('public') is not False:
             raise RuntimeError(
-                "The V4 journal must be private; "
-                "paper entries are blocked"
+                'The V4 journal must be private; paper entries are blocked'
             )
 
         return True
 
     def get(self, folder, key):
-        path = folder + "/" + key
+        path = folder + '/' + key
 
         if path not in self.cache:
             value = self.request(
-                "GET",
-                "/object/authenticated/"
-                + BUCKET
-                + "/"
-                + path,
+                'GET',
+                '/object/authenticated/' + BUCKET + '/' + path,
                 missing=True,
             )
-
             if value is not None:
                 self.cache[path] = value
-
             return value
 
         return self.cache[path]
 
     def once(self, folder, key, value):
         result = self.request(
-            "POST",
-            "/object/"
-            + BUCKET
-            + "/"
-            + folder
-            + "/"
-            + key,
+            'POST',
+            '/object/' + BUCKET + '/' + folder + '/' + key,
             value,
         )
 
-        if result.get("duplicate"):
+        if result.get('duplicate'):
             existing = self.get(folder, key)
-
             if existing is None:
                 raise RuntimeError(
-                    "Could not verify the existing paper event"
+                    'Could not verify the existing paper event'
                 )
-
             return existing
 
-        self.cache[folder + "/" + key] = value
+        self.cache[folder + '/' + key] = value
         return value
+
+    def control(self):
+        # Mutable settings bypass the immutable-event cache.
+        return self.request(
+            'GET',
+            '/object/authenticated/' + BUCKET + '/settings/control.json',
+            missing=True,
+        )
+
+    def save_control(self, enabled):
+        if type(enabled) is not bool:
+            raise ValueError('Paper switch must be ON or PAUSED')
+
+        self.request(
+            'PUT',
+            '/object/' + BUCKET + '/settings/control.json',
+            {
+                'enabled': enabled,
+                'updated_at': now_utc().isoformat(),
+            },
+        )
 
     def rows(self):
         objects = self.request(
-            "POST",
-            "/object/list/" + BUCKET,
+            'POST',
+            '/object/list/' + BUCKET,
             {
-                "prefix": "entries",
-                "limit": 200,
-                "offset": 0,
-                "sortBy": {
-                    "column": "name",
-                    "order": "desc",
+                'prefix': 'entries',
+                'limit': 200,
+                'offset': 0,
+                'sortBy': {
+                    'column': 'name',
+                    'order': 'desc',
                 },
             },
         )
 
         names = [
-            item["name"]
+            item['name']
             for item in objects
-            if str(item.get("name", "")).endswith(".json")
+            if str(item.get('name', '')).endswith('.json')
         ]
 
         def load(key):
-            entry = self.get("entries", key)
+            entry = self.get('entries', key)
 
             if not entry:
-                raise RuntimeError(
-                    "A paper entry could not be read"
-                )
+                raise RuntimeError('A paper entry could not be read')
 
-            final = self.get("finals", key)
+            final = self.get('finals', key)
 
             return {
-                "key": key,
-                "entry": entry,
-                "final": final,
-                "exit": (
-                    None
-                    if final
-                    else self.get("exits", key)
-                ),
+                'key': key,
+                'entry': entry,
+                'final': final,
+                'exit': None if final else self.get('exits', key),
             }
 
         with ThreadPoolExecutor(max_workers=6) as pool:
@@ -417,103 +374,62 @@ def journal(url, key):
 
 
 def exit_estimate(entry, market):
-    bid = quote(market, entry["side"], "bid")
-    ask = quote(market, entry["side"], "ask")
-    size = available(market, entry["side"], "bid")
-    slippage = entry.get("slippage", SLIPPAGE)
+    bid = quote(market, entry['side'], 'bid')
+    ask = quote(market, entry['side'], 'ask')
+    size = available(market, entry['side'], 'bid')
+    slippage = entry.get('slippage', SLIPPAGE)
 
     if (
         bid is None
         or ask is None
         or not slippage < bid <= ask < 1
         or size is None
-        or size < entry["qty"]
+        or size < entry['qty']
     ):
         return None
 
-    price = max(
-        0.0,
-        cents_round(bid - slippage, False),
-    )
-
-    exit_fee = fee(
-        entry["qty"],
-        price,
-        entry["fee_multiplier"],
-    )
+    price = max(0.0, cents_round(bid - slippage, False))
+    exit_fee = fee(entry['qty'], price, entry['fee_multiplier'])
 
     return {
-        "price": price,
-        "fee": exit_fee,
-        "pnl": round(
-            entry["qty"] * price
-            - exit_fee
-            - entry["risk"],
+        'price': price,
+        'fee': exit_fee,
+        'pnl': round(
+            entry['qty'] * price - exit_fee - entry['risk'],
             6,
         ),
     }
 
 
-def close_reason(
-    entry,
-    estimate,
-    spot,
-    trend,
-    seconds,
-):
-    if (
-        estimate["pnl"]
-        >= entry.get(
-            "take_profit_fraction",
-            TAKE_PROFIT,
-        ) * entry["risk"]
+def close_reason(entry, estimate, spot, trend, seconds):
+    if estimate['pnl'] >= (
+        entry.get('take_profit_fraction', TAKE_PROFIT)
+        * entry['risk']
     ):
-        return (
-            "Experimental profit review: "
-            "+25% of entry risk"
-        )
+        return 'Experimental profit review: +25% of entry risk'
+
+    if estimate['pnl'] <= (
+        -entry.get('loss_review_fraction', STOP_REVIEW)
+        * entry['risk']
+    ):
+        return 'Experimental loss review: -20% of entry risk'
 
     if (
-        estimate["pnl"]
-        <= -entry.get(
-            "loss_review_fraction",
-            STOP_REVIEW,
-        ) * entry["risk"]
-    ):
-        return (
-            "Experimental loss review: "
-            "-20% of entry risk"
-        )
-
-    if (
-        entry["side"] == "ABOVE"
-        and spot < entry["target"]
+        entry['side'] == 'ABOVE' and spot < entry['target']
     ) or (
-        entry["side"] == "BELOW"
-        and spot > entry["target"]
+        entry['side'] == 'BELOW' and spot > entry['target']
     ):
-        return (
-            "Spot crossed the target "
-            "against the position"
-        )
+        return 'Spot crossed the target against the position'
 
     if (
-        entry["side"] == "ABOVE"
-        and trend == "DOWNWARD"
+        entry['side'] == 'ABOVE' and trend == 'DOWNWARD'
     ) or (
-        entry["side"] == "BELOW"
-        and trend == "UPWARD"
+        entry['side'] == 'BELOW' and trend == 'UPWARD'
     ):
-        return (
-            "Opposing EMA and "
-            "momentum confirmation"
-        )
+        return 'Opposing EMA and momentum confirmation'
 
     if seconds <= 75:
-        return (
-            "Exit review before the "
-            "final settlement minute"
-        )
+        return 'Exit review before the final settlement minute'
 
     return None
 
@@ -522,12 +438,11 @@ def grade_papers(store, rows):
     checks = 0
 
     for row in rows:
-        entry = row["entry"]
+        entry = row['entry']
 
         if (
-            row["final"]
-            or now_utc().timestamp()
-            < entry["close_ts"] + 60
+            row['final']
+            or now_utc().timestamp() < entry['close_ts'] + 60
             or checks >= 5
         ):
             continue
@@ -536,125 +451,88 @@ def grade_papers(store, rows):
 
         try:
             market = public_get(
-                "/markets/" + entry["ticker"]
-            )["market"]
+                '/markets/' + entry['ticker']
+            )['market']
 
-            outcome = market.get("result")
+            outcome = market.get('result')
 
             if (
-                market.get("status")
-                not in ("settled", "finalized")
-                or outcome not in ("yes", "no")
+                market.get('status') not in ('settled', 'finalized')
+                or outcome not in ('yes', 'no')
             ):
                 continue
 
             win = (
-                entry["side"] == "ABOVE"
-            ) == (
-                outcome == "yes"
+                (entry['side'] == 'ABOVE')
+                == (outcome == 'yes')
             )
 
             hold_pnl = round(
-                (
-                    entry["qty"]
-                    if win
-                    else 0
-                ) - entry["risk"],
+                (entry['qty'] if win else 0) - entry['risk'],
                 6,
             )
 
             exit_event = (
-                row["exit"]
-                or store.get(
-                    "exits",
-                    row["key"],
-                )
+                row['exit'] or store.get('exits', row['key'])
             )
 
             closed_at = (
-                exit_event["observed_at"]
+                exit_event['observed_at']
                 if exit_event
                 else datetime.fromtimestamp(
-                    entry["close_ts"],
+                    entry['close_ts'],
                     timezone.utc,
                 ).isoformat()
             )
 
             final = {
-                "outcome": outcome,
-                "value": market.get(
-                    "expiration_value"
+                'outcome': outcome,
+                'value': market.get('expiration_value'),
+                'hold_pnl': hold_pnl,
+                'managed_pnl': (
+                    exit_event['pnl'] if exit_event else hold_pnl
                 ),
-                "hold_pnl": hold_pnl,
-                "managed_pnl": (
-                    exit_event["pnl"]
+                'exit_reason': (
+                    exit_event['reason']
                     if exit_event
-                    else hold_pnl
+                    else 'Held to official settlement'
                 ),
-                "exit_reason": (
-                    exit_event["reason"]
-                    if exit_event
-                    else "Held to official settlement"
-                ),
-                "managed_closed_at": closed_at,
-                "graded_at": now_utc().isoformat(),
+                'managed_closed_at': closed_at,
+                'graded_at': now_utc().isoformat(),
             }
 
-            row["final"] = store.once(
-                "finals",
-                row["key"],
+            row['final'] = store.once(
+                'finals',
+                row['key'],
                 final,
             )
 
-        except (
-            requests.RequestException,
-            ValueError,
-            KeyError,
-        ):
+        except (requests.RequestException, ValueError, KeyError):
             continue
 
 
-def candidate(
-    market,
-    result,
-    df,
-    spot,
-    multiplier,
-):
-    if result.get("status") != "CANDIDATE":
+def candidate(market, result, df, spot, multiplier):
+    if result.get('status') != 'CANDIDATE':
         return None, list(
-            result.get("reasons")
-            or [
-                "V3 candidate conditions "
-                "did not pass"
-            ]
+            result.get('reasons')
+            or ['V3 candidate conditions did not pass']
         )
 
-    side = result.get("side")
+    side = result.get('side')
 
-    if (
-        df is None
-        or len(df) < 60
-        or "time" not in df
-    ):
+    if df is None or len(df) < 60 or 'time' not in df:
         return None, [
-            "Need 60 consecutive 1-minute "
-            "candles for this forward test"
+            'Need 60 consecutive 1-minute candles for this forward test'
         ]
 
-    pd = __import__("pandas")
+    pd = __import__('pandas')
 
     times = pd.to_datetime(
-        df["time"].tail(60),
+        df['time'].tail(60),
         utc=True,
-        errors="coerce",
+        errors='coerce',
     )
-
-    intervals = (
-        times.diff()
-        .dt.total_seconds()
-        .dropna()
-    )
+    intervals = times.diff().dt.total_seconds().dropna()
 
     if (
         times.isna().any()
@@ -662,12 +540,11 @@ def candidate(
         or not intervals.between(45, 90).all()
     ):
         return None, [
-            "Recent 1-minute candles have gaps "
-            "or inconsistent timestamps"
+            'Recent 1-minute candles have gaps or inconsistent timestamps'
         ]
 
-    ask = quote(market, side, "ask")
-    bid = quote(market, side, "bid")
+    ask = quote(market, side, 'ask')
+    bid = quote(market, side, 'bid')
 
     if (
         ask is None
@@ -676,57 +553,37 @@ def candidate(
         or ask - bid > 0.030001
     ):
         return None, [
-            "Executable quotes are missing "
-            "or the spread is wider than 3¢"
+            'Executable quotes are missing or the spread is wider than 3¢'
         ]
 
     price = cents_round(ask + SLIPPAGE)
 
     if not 0 < price <= ENTRY_CAP:
         return None, [
-            "Experimental effective-entry cap "
-            "is 70¢, including 1¢ slippage"
+            'Experimental effective-entry cap is 70¢, including 1¢ slippage'
         ]
 
-    qty, entry_fee, risk = size_for(
-        price,
-        multiplier,
-    )
+    qty, entry_fee, risk = size_for(price, multiplier)
+    size = available(market, side, 'ask')
 
-    size = available(
-        market,
-        side,
-        "ask",
-    )
-
-    if (
-        qty < 1
-        or size is None
-        or size < qty
-    ):
+    if qty < 1 or size is None or size < qty:
         return None, [
-            "Insufficient displayed size "
-            "for this paper entry"
+            'Insufficient displayed size for this paper entry'
         ]
 
-    previous = df["close"].shift(1)
+    previous = df['close'].shift(1)
 
     ranges = pd.concat(
         [
-            (df["high"] - df["low"]).abs(),
-            (df["high"] - previous).abs(),
-            (df["low"] - previous).abs(),
+            (df['high'] - df['low']).abs(),
+            (df['high'] - previous).abs(),
+            (df['low'] - previous).abs(),
         ],
         axis=1,
     ).max(axis=1)
 
-    atr = float(
-        ranges.tail(14).mean()
-    )
-
-    seconds = float(
-        result["seconds_left"]
-    )
+    atr = float(ranges.tail(14).mean())
+    seconds = float(result['seconds_left'])
 
     cushion = max(
         50,
@@ -734,39 +591,601 @@ def candidate(
     )
 
     distance = abs(
-        spot - float(
-            market["floor_strike"]
-        )
+        spot - float(market['floor_strike'])
     )
 
     if distance < cushion:
         return None, [
-            "Target cushion is too small "
-            "relative to recent volatility"
+            'Target cushion is too small relative to recent volatility'
         ]
 
-    candle_age = result.get(
-        "candle_age"
-    )
+    candle_age = result.get('candle_age')
 
-    if (
-        candle_age is None
-        or not -3 <= candle_age <= 90
-    ):
-        return None, [
-            "Need candles no older "
-            "than 90 seconds"
-        ]
+    if candle_age is None or not -3 <= candle_age <= 90:
+        return None, ['Need candles no older than 90 seconds']
 
     return {
-        "side": side,
-        "price": price,
-        "qty": qty,
-        "fee": entry_fee,
-        "risk": risk,
-        "distance": distance,
-        "breakeven": risk / qty,
+        'side': side,
+        'price': price,
+        'qty': qty,
+        'fee': entry_fee,
+        'risk': risk,
+        'distance': distance,
+        'breakeven': risk / qty,
     }, []
+
+
+def _paper_toggle():
+    st.session_state['qe_v4_pending'] = bool(
+        st.session_state['_qe_v4_switch']
+    )
+
+
+def paper_enabled(store):
+    # Settings are mutable. Trade/exit/final records remain append-only.
+    control = store.control()
+
+    if control is None:
+        legacy = st.session_state.get('qe_v4_enabled') is True
+
+        store.once(
+            'settings',
+            'control.json',
+            {
+                'enabled': legacy,
+                'updated_at': now_utc().isoformat(),
+            },
+        )
+
+        control = store.control()
+
+    if (
+        not isinstance(control, dict)
+        or type(control.get('enabled')) is not bool
+    ):
+        raise RuntimeError(
+            'Saved paper switch is invalid; no new entries'
+        )
+
+    if 'qe_v4_pending' in st.session_state:
+        wanted = st.session_state['qe_v4_pending']
+        store.save_control(wanted)
+        control = store.control()
+
+        if control is None or control.get('enabled') is not wanted:
+            raise RuntimeError(
+                'Paper switch could not be saved; retry the switch'
+            )
+
+        st.session_state.pop('qe_v4_pending', None)
+        st.session_state.pop('qe_v4_confirm', None)
+
+    enabled = control['enabled']
+
+    st.session_state['_qe_v4_switch'] = enabled
+
+    st.checkbox(
+        'Enable new V4 paper entries — never real orders',
+        key='_qe_v4_switch',
+        on_change=_paper_toggle,
+    )
+
+    st.caption(
+        ('ON' if enabled else 'PAUSED')
+        + ' · saved across reconnects and devices. '
+        'Processing runs only while the dashboard is open.'
+    )
+
+    return enabled
+
+
+def fresh_snapshot(ticker):
+    # Workers use HTTP and timestamps, never Streamlit widgets.
+    def market_request():
+        data = public_get(
+            '/markets/' + ticker,
+            fresh=True,
+        )['market']
+        return data, now_utc()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        market_job = pool.submit(market_request)
+        trade_job = pool.submit(trade_snapshot)
+
+        market, quote_at = market_job.result()
+        price, trade_time = trade_job.result()
+
+    if not snapshot_current(quote_at, trade_time):
+        raise RuntimeError(
+            'Fresh quote / BTC trade unavailable; waiting for a new snapshot'
+        )
+
+    return market, quote_at, price, trade_time
+
+
+def daily_pnl(rows):
+    today = now_utc().astimezone(CT).date()
+    total = 0.0
+
+    for row in rows:
+        event = row['final'] or row['exit']
+
+        if event:
+            closed = utc(
+                event.get('managed_closed_at')
+                or event.get('observed_at')
+            )
+
+            if closed and closed.astimezone(CT).date() == today:
+                total += (
+                    event['managed_pnl']
+                    if row['final']
+                    else event['pnl']
+                )
+
+    return total
+
+
+def paper_metrics(rows):
+    finals = [row for row in rows if row['final']]
+    cols = st.columns(4)
+
+    managed = sum(
+        row['final']['managed_pnl']
+        for row in finals
+    )
+    settlement = sum(
+        row['final']['hold_pnl']
+        for row in finals
+    )
+
+    cols[0].metric(
+        'Matched managed P&L',
+        f'${managed:+.2f}',
+    )
+    cols[1].metric(
+        'Matched settlement P&L',
+        f'${settlement:+.2f}',
+    )
+    cols[2].metric(
+        'Paper entries / official outcomes',
+        f'{len(rows)} / {len(finals)}',
+    )
+    cols[3].metric(
+        'Today · managed realized',
+        f'${daily_pnl(rows):+.2f}',
+    )
+
+
+def scan_status(kind, message, reasons=None):
+    health = st.session_state.setdefault(
+        'qe_v4_health',
+        {
+            'scans': 0,
+            'counts': {},
+            'reasons': {},
+        },
+    )
+
+    health['scans'] += 1
+
+    health['counts'][kind] = (
+        health['counts'].get(kind, 0) + 1
+    )
+
+    for reason in reasons or []:
+        health['reasons'][reason] = (
+            health['reasons'].get(reason, 0) + 1
+        )
+
+    health.update(
+        last=now_utc().isoformat(),
+        message=message,
+    )
+
+    st.info(message)
+
+    with st.expander(
+        'Paper scanner · health & blocking reasons',
+        expanded=False,
+    ):
+        st.caption(
+            'Session counters reset on reconnect. '
+            'Saved entries and the ON/PAUSED setting do not.'
+        )
+
+        st.write(
+            'Last scan CT:',
+            now_utc().astimezone(CT).strftime('%m/%d %H:%M:%S'),
+        )
+        st.write('Scans this session:', health['scans'])
+        st.write('Scan results:', health['counts'])
+
+        st.dataframe(
+            [
+                {
+                    'Blocking reason': reason,
+                    'Scans': count,
+                }
+                for reason, count in sorted(
+                    health['reasons'].items(),
+                    key=lambda item: -item[1],
+                )[:20]
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+
+def paper_history(rows):
+    with st.expander(
+        'V4 paper history · compare the same entries',
+        expanded=False,
+    ):
+        display = []
+
+        for row in rows:
+            entry = row['entry']
+            final = row['final']
+            exit_event = row['exit']
+
+            display.append(
+                {
+                    'Observed CT': (
+                        utc(entry['observed_at'])
+                        .astimezone(CT)
+                        .strftime('%m/%d %H:%M:%S')
+                    ),
+                    'Ticker': entry['ticker'],
+                    'Side': entry['side'],
+                    'Entry ¢': round(entry['price'] * 100, 1),
+                    'Qty': entry['qty'],
+                    'Entry risk $': entry['risk'],
+                    'Fee estimate $': entry['fee'],
+                    'Break-even': f"{entry['breakeven']:.1%}",
+                    'Managed net $': (
+                        final['managed_pnl']
+                        if final
+                        else exit_event['pnl']
+                        if exit_event
+                        else None
+                    ),
+                    'Hold net $': (
+                        final['hold_pnl']
+                        if final
+                        else None
+                    ),
+                    'Official result': (
+                        final['outcome']
+                        if final
+                        else 'PENDING'
+                    ),
+                    'Exit': (
+                        final['exit_reason']
+                        if final
+                        else exit_event['reason']
+                        if exit_event
+                        else 'OPEN'
+                    ),
+                }
+            )
+
+        st.dataframe(
+            display,
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        st.caption(
+            'Latest 200 entries shown. Older events remain stored. '
+            'Only forward observations are entered; chart arrows '
+            'are never backfilled. Fills and fees are estimates. '
+            'V4 is separate from Early, Locked, WATCH and V2 history.'
+        )
+
+
+def evaluate_papers(
+    store,
+    rows,
+    market,
+    verified,
+    quote_fn,
+    candle_fn,
+    enabled,
+):
+    ticker = str((market or {}).get('ticker', ''))
+
+    if not ticker.startswith('KXBTC15M-'):
+        raise RuntimeError(
+            'No Bitcoin 15-minute ticker; waiting for a current market'
+        )
+
+    pending = [
+        row
+        for row in rows
+        if not row['final']
+        and not row['exit']
+        and row['entry']['ticker'] == ticker
+    ]
+
+    expected_close = utc(market.get('close_time'))
+
+    remaining = (
+        (expected_close - now_utc()).total_seconds()
+        if expected_close
+        else None
+    )
+
+    if not enabled and not pending:
+        st.session_state.pop('qe_v4_confirm', None)
+
+        return (
+            'PAUSED',
+            'New paper entries paused. Saved history is preserved.',
+            [],
+        )
+
+    if (
+        not pending
+        and remaining is not None
+        and not 180 <= remaining <= 600
+    ):
+        st.session_state.pop('qe_v4_confirm', None)
+
+        return (
+            'WINDOW',
+            'WAIT · Outside entry window: this test checks '
+            'from 10 to 3 minutes remaining.',
+            ['Outside 10–3 minute entry window'],
+        )
+
+    # Complete slower work before requesting fresh quotes.
+    df, feed_name, feed_errors, clock = _get_candles(candle_fn)
+
+    multiplier = (
+        series_fee()
+        if enabled and not pending
+        else None
+    )
+
+    fresh_market, quote_at, live_spot, trade_time = (
+        fresh_snapshot(ticker)
+    )
+
+    close = utc(fresh_market.get('close_time'))
+
+    if close is None or fresh_market.get('ticker') != ticker:
+        raise RuntimeError(
+            'Current contract identity or close time unavailable'
+        )
+
+    seconds = (close - now_utc()).total_seconds()
+
+    if fresh_market.get('status') != 'active' or seconds <= 0:
+        st.session_state.pop('qe_v4_confirm', None)
+
+        return (
+            'WINDOW',
+            'WAIT · Contract closed or inactive. '
+            'Official settlement remains pending.',
+            [],
+        )
+
+    result = assess(
+        fresh_market,
+        fresh_market.get('floor_strike'),
+        live_spot,
+        df,
+        seconds,
+        bool(verified),
+        quote_fn,
+        False,
+        feed_name,
+    )
+
+    if not snapshot_current(quote_at, trade_time):
+        raise RuntimeError(
+            'Quote or BTC trade aged during evaluation; '
+            'waiting for a new snapshot'
+        )
+
+    exit_message = None
+
+    for row in pending:
+        entry = row['entry']
+        estimate = exit_estimate(entry, fresh_market)
+
+        if estimate:
+            reason = close_reason(
+                entry,
+                estimate,
+                live_spot,
+                result.get('ema_trend'),
+                seconds,
+            )
+
+            if reason:
+                if not snapshot_current(quote_at, trade_time):
+                    raise RuntimeError(
+                        'Exit snapshot aged before recording; '
+                        'waiting for a new snapshot'
+                    )
+
+                row['exit'] = store.once(
+                    'exits',
+                    row['key'],
+                    {
+                        **estimate,
+                        'reason': reason,
+                        'observed_at': now_utc().isoformat(),
+                    },
+                )
+
+                exit_message = 'PAPER EXIT SAVED · ' + reason
+
+    file_key = (
+        str(int(close.timestamp() * 1000))
+        + '_'
+        + ticker
+        + '.json'
+    )
+
+    if any(row['key'] == file_key for row in rows):
+        return (
+            'MONITOR',
+            exit_message
+            or 'This market already has its one V4 paper entry. '
+            'Monitoring / awaiting official settlement.',
+            [],
+        )
+
+    if not enabled:
+        st.session_state.pop('qe_v4_confirm', None)
+
+        return (
+            'PAUSED',
+            exit_message
+            or 'New paper entries paused; existing positions monitored.',
+            [],
+        )
+
+    if not 180 <= seconds <= 600:
+        st.session_state.pop('qe_v4_confirm', None)
+
+        return (
+            'WINDOW',
+            'WAIT · Outside 10–3 minute entry window.',
+            ['Outside 10–3 minute entry window'],
+        )
+
+    if daily_pnl(rows) <= -DAILY_STOP:
+        return (
+            'LIMIT',
+            'Daily paper loss review limit reached (-$15). '
+            'Waiting until the next Central date.',
+            ['Daily paper loss limit'],
+        )
+
+    if any(
+        not row['final']
+        and row['entry']['close_ts'] > now_utc().timestamp()
+        for row in rows
+    ):
+        return (
+            'MONITOR',
+            'Another paper window is still open. Waiting.',
+            [],
+        )
+
+    proposed, reasons = candidate(
+        fresh_market,
+        result,
+        df,
+        live_spot,
+        multiplier,
+    )
+
+    if not proposed:
+        st.session_state.pop('qe_v4_confirm', None)
+
+        if df is None:
+            reasons = reasons + [
+                'No fresh candle source; open Original V3 '
+                'diagnostics for feed details'
+            ]
+
+        kind = (
+            'DATA'
+            if result.get('status') == 'DATA ISSUE' or df is None
+            else 'FILTERED'
+        )
+
+        return kind, 'WAIT · ' + '; '.join(reasons), reasons
+
+    stamp = now_utc().timestamp()
+    old = st.session_state.get('qe_v4_confirm')
+
+    same = (
+        old
+        and old['ticker'] == ticker
+        and old['side'] == proposed['side']
+    )
+
+    restart = (
+        not same
+        or stamp - old['time'] > 45
+        or proposed['distance'] < old['distance'] * 0.75
+        or proposed['price'] > old['price'] + 0.03
+    )
+
+    if restart:
+        st.session_state['qe_v4_confirm'] = {
+            **proposed,
+            'ticker': ticker,
+            'time': stamp,
+        }
+
+        return (
+            'CONFIRMING',
+            'WAIT · First eligible quote. Need another eligible '
+            'observation at least 10 seconds later.',
+            [],
+        )
+
+    if stamp - old['time'] < 10:
+        return (
+            'CONFIRMING',
+            'WAIT · Candidate has not held for 10 seconds.',
+            [],
+        )
+
+    if (
+        not snapshot_current(quote_at, trade_time)
+        or not 180 <= (close - now_utc()).total_seconds() <= 600
+    ):
+        raise RuntimeError(
+            'Snapshot or entry window expired before recording'
+        )
+
+    entry = {
+        **proposed,
+        'ticker': ticker,
+        'target': float(fresh_market['floor_strike']),
+        'close_ts': close.timestamp(),
+        'observed_at': now_utc().isoformat(),
+        'trade_time': trade_time.isoformat(),
+        'fee_multiplier': multiplier,
+        'fee_model': (
+            'Estimated quadratic taker, whole-cent assumed fills'
+        ),
+        'strategy': 'V4-forward-v1',
+        'take_profit_fraction': TAKE_PROFIT,
+        'loss_review_fraction': STOP_REVIEW,
+        'entry_cap': ENTRY_CAP,
+        'slippage': SLIPPAGE,
+    }
+
+    saved = store.once('entries', file_key, entry)
+
+    rows.insert(
+        0,
+        {
+            'key': file_key,
+            'entry': saved,
+            'exit': None,
+            'final': None,
+        },
+    )
+
+    st.session_state.pop('qe_v4_confirm', None)
+
+    return (
+        'ENTRY',
+        f"PAPER ENTRY SAVED · {saved['side']} · "
+        f"{saved['qty']} contracts at {saved['price']*100:.0f}¢ "
+        f"· risk ${saved['risk']:.2f}. No order was sent.",
+        [],
+    )
 
 
 def _run_paper_engine(
@@ -780,626 +1199,93 @@ def _run_paper_engine(
     quote_stale=False,
 ):
     st.markdown(
-        "#### 👑 Forward Paper Test "
-        "· Entry & Exit Comparison"
-    )
-
-    enabled = st.checkbox(
-        "Enable new V4 paper entries "
-        "— never real orders",
-        value=False,
-        key="qe_v4_enabled",
+        '#### 👑 Forward Paper Test · Entry & Exit Comparison'
     )
 
     st.caption(
-        "Experimental fixed settings: "
-        "effective entry ≤70¢; spread ≤3¢; "
-        "$5 risk including fee estimate; "
-        "1¢ adverse slippage each way. "
-        "Two independent quote observations "
-        "at least 10 seconds apart are required. "
-        "These settings are not optimized "
-        "or proven profitable."
+        'Experimental settings unchanged: effective entry ≤70¢; '
+        'spread ≤3¢; $5 risk including fee estimate; '
+        '1¢ adverse slippage each way; two eligible observations '
+        'at least 10 seconds apart. Profitability is unproven.'
     )
 
-    url = st.secrets.get(
-        "SUPABASE_URL"
-    )
-    key = st.secrets.get(
-        "SUPABASE_SERVICE_ROLE_KEY"
-    )
-
-    if not url or not key:
-        st.warning(
-            "V4 paper recording is disabled: "
-            "existing Supabase credentials "
-            "are unavailable. No temporary "
-            "results will be presented "
-            "as saved history."
-        )
-        return
+    rows = None
 
     try:
-        store = journal(
-            str(url),
-            str(key),
-        )
+        url = st.secrets.get('SUPABASE_URL')
+        key = st.secrets.get('SUPABASE_SERVICE_ROLE_KEY')
 
-        if not store.ensure(
-            create=enabled
-        ):
-            st.info(
-                "Enable the paper test to "
-                "initialize its separate "
-                "private journal. Existing "
-                "tracker tables are preserved."
+        if not url or not key:
+            raise RuntimeError(
+                'Existing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY '
+                'unavailable; paper recording disabled'
             )
-            return
+
+        store = journal(str(url), str(key))
+        store.ensure(create=True)
+        enabled = paper_enabled(store)
 
         rows = store.rows()
         grade_papers(store, rows)
 
-        final_rows = [
-            row for row in rows
-            if row["final"]
-        ]
-
-        managed = sum(
-            row["final"]["managed_pnl"]
-            for row in final_rows
-        )
-        hold = sum(
-            row["final"]["hold_pnl"]
-            for row in final_rows
+        kind, message, reasons = evaluate_papers(
+            store,
+            rows,
+            market,
+            verified,
+            quote_fn,
+            candle_fn,
+            enabled,
         )
 
-        today = (
-            now_utc()
-            .astimezone(CT)
-            .date()
-        )
-
-        day_pnl = 0.0
-
-        for row in rows:
-            event = (
-                row["final"]
-                or row["exit"]
-            )
-
-            if event:
-                closed = utc(
-                    event.get(
-                        "managed_closed_at"
-                    )
-                    or event.get(
-                        "observed_at"
-                    )
-                )
-
-                if (
-                    closed
-                    and closed.astimezone(CT).date()
-                    == today
-                ):
-                    day_pnl += (
-                        event["managed_pnl"]
-                        if row["final"]
-                        else event["pnl"]
-                    )
-
-        cols = st.columns(4)
-
-        cols[0].metric(
-            "Matched managed P&L",
-            f"${managed:+.2f}",
-        )
-        cols[1].metric(
-            "Matched settlement P&L",
-            f"${hold:+.2f}",
-        )
-        cols[2].metric(
-            "Paper entries / official outcomes",
-            f"{len(rows)} / {len(final_rows)}",
-        )
-        cols[3].metric(
-            "Today · managed realized",
-            f"${day_pnl:+.2f}",
-        )
-
-        message = (
-            "New entries paused; existing "
-            "paper positions are still monitored."
-        )
-
-        if not enabled:
-            st.session_state.pop(
-                "qe_v4_confirm",
-                None,
-            )
-
-        ticker = str(
-            (market or {}).get(
-                "ticker",
-                "",
-            )
-        )
-
-        if not ticker.startswith(
-            "KXBTC15M-"
-        ):
-            raise RuntimeError(
-                "No verified Bitcoin "
-                "15-minute ticker"
-            )
-
-        fresh_market = public_get(
-            "/markets/" + ticker,
-            fresh=True,
-        )["market"]
-
-        quote_at = now_utc()
-
-        close = utc(
-            fresh_market.get(
-                "close_time"
-            )
-        )
-
-        if (
-            close is None
-            or fresh_market.get("ticker")
-            != ticker
-        ):
-            raise RuntimeError(
-                "Current contract identity "
-                "or close time unavailable"
-            )
-
-        seconds = (
-            close - now_utc()
-        ).total_seconds()
-
-        if (
-            fresh_market.get("status")
-            == "active"
-            and seconds > 0
-        ):
-            live_spot, trade_time = (
-                trade_snapshot()
-            )
-
-            (
-                df,
-                feed_name,
-                errors,
-                clock,
-            ) = _get_candles(
-                candle_fn
-            )
-
-            result = assess(
-                fresh_market,
-                fresh_market.get(
-                    "floor_strike"
-                ),
-                live_spot,
-                df,
-                seconds,
-                bool(verified),
-                quote_fn,
-                False,
-                feed_name,
-            )
-
-            if not snapshot_current(
-                quote_at,
-                trade_time,
-            ):
-                raise RuntimeError(
-                    "Quote or BTC tick aged "
-                    "during evaluation; waiting "
-                    "for a new snapshot"
-                )
-
-            for row in rows:
-                entry = row["entry"]
-
-                if (
-                    entry["ticker"] == ticker
-                    and not row["final"]
-                    and not row["exit"]
-                ):
-                    estimate = exit_estimate(
-                        entry,
-                        fresh_market,
-                    )
-
-                    if estimate:
-                        reason = close_reason(
-                            entry,
-                            estimate,
-                            live_spot,
-                            result.get(
-                                "ema_trend"
-                            ),
-                            seconds,
-                        )
-
-                        if reason:
-                            row["exit"] = (
-                                store.once(
-                                    "exits",
-                                    row["key"],
-                                    {
-                                        **estimate,
-                                        "reason": reason,
-                                        "observed_at": (
-                                            now_utc()
-                                            .isoformat()
-                                        ),
-                                    },
-                                )
-                            )
-
-                            message = (
-                                "Paper exit observed: "
-                                + reason
-                            )
-
-            if enabled:
-                multiplier = series_fee()
-
-                proposed, reasons = (
-                    candidate(
-                        fresh_market,
-                        result,
-                        df,
-                        live_spot,
-                        multiplier,
-                    )
-                )
-
-                active = any(
-                    not row["final"]
-                    and row["entry"]["close_ts"]
-                    > now_utc().timestamp()
-                    for row in rows
-                )
-
-                file_key = (
-                    str(
-                        int(
-                            close.timestamp()
-                            * 1000
-                        )
-                    )
-                    + "_"
-                    + ticker
-                    + ".json"
-                )
-
-                existing = store.get(
-                    "entries",
-                    file_key,
-                )
-
-                if existing:
-                    message = (
-                        "This market already has "
-                        "its one V4 paper entry. "
-                        "No repeat or opposite-side "
-                        "entry."
-                    )
-
-                elif day_pnl <= -DAILY_STOP:
-                    message = (
-                        "Daily paper loss review "
-                        "limit reached (-$15). "
-                        "New entries paused "
-                        "for today."
-                    )
-
-                elif active:
-                    message = (
-                        "Another paper window "
-                        "is still open. Waiting."
-                    )
-
-                elif not proposed:
-                    st.session_state.pop(
-                        "qe_v4_confirm",
-                        None,
-                    )
-
-                    message = (
-                        "WAIT · "
-                        + "; ".join(reasons)
-                    )
-
-                else:
-                    stamp = (
-                        now_utc().timestamp()
-                    )
-
-                    old = (
-                        st.session_state.get(
-                            "qe_v4_confirm"
-                        )
-                    )
-
-                    same = (
-                        old
-                        and old["ticker"]
-                        == ticker
-                        and old["side"]
-                        == proposed["side"]
-                    )
-
-                    restart = (
-                        not same
-                        or stamp - old["time"] > 45
-                        or proposed["distance"]
-                        < old["distance"] * .75
-                        or proposed["price"]
-                        > old["price"] + .03
-                    )
-
-                    if restart:
-                        st.session_state[
-                            "qe_v4_confirm"
-                        ] = {
-                            **proposed,
-                            "ticker": ticker,
-                            "time": stamp,
-                        }
-
-                        message = (
-                            "WAIT · First eligible "
-                            "quote. Waiting for "
-                            "another observation "
-                            "at least 10 seconds "
-                            "later."
-                        )
-
-                    elif (
-                        stamp - old["time"]
-                        < 10
-                    ):
-                        message = (
-                            "WAIT · Candidate has "
-                            "not held for "
-                            "10 seconds."
-                        )
-
-                    else:
-                        current_seconds = (
-                            close - now_utc()
-                        ).total_seconds()
-
-                        if (
-                            not snapshot_current(
-                                quote_at,
-                                trade_time,
-                            )
-                            or current_seconds < 180
-                        ):
-                            raise RuntimeError(
-                                "Snapshot or entry "
-                                "window expired "
-                                "before recording"
-                            )
-
-                        entry = {
-                            **proposed,
-                            "ticker": ticker,
-                            "target": float(
-                                fresh_market[
-                                    "floor_strike"
-                                ]
-                            ),
-                            "close_ts": (
-                                close.timestamp()
-                            ),
-                            "observed_at": (
-                                now_utc()
-                                .isoformat()
-                            ),
-                            "trade_time": (
-                                trade_time
-                                .isoformat()
-                            ),
-                            "fee_multiplier": (
-                                multiplier
-                            ),
-                            "fee_model": (
-                                "Estimated quadratic "
-                                "taker, whole-cent "
-                                "assumed fills"
-                            ),
-                            "strategy": (
-                                "V4-forward-v1"
-                            ),
-                            "take_profit_fraction": (
-                                TAKE_PROFIT
-                            ),
-                            "loss_review_fraction": (
-                                STOP_REVIEW
-                            ),
-                            "entry_cap": (
-                                ENTRY_CAP
-                            ),
-                            "slippage": (
-                                SLIPPAGE
-                            ),
-                        }
-
-                        store.once(
-                            "entries",
-                            file_key,
-                            entry,
-                        )
-
-                        st.session_state.pop(
-                            "qe_v4_confirm",
-                            None,
-                        )
-
-                        message = (
-                            "PAPER ENTRY SAVED · "
-                            f"{entry['side']} · "
-                            f"{entry['qty']} contracts "
-                            f"at {entry['price']*100:.0f}¢ "
-                            f"· risk ${entry['risk']:.2f} "
-                            "· settlement break-even "
-                            f"{entry['breakeven']:.1%}. "
-                            "No order was sent."
-                        )
-
-        else:
-            st.session_state.pop(
-                "qe_v4_confirm",
-                None,
-            )
-
-            message = (
-                "WAIT · Current contract is "
-                "closed or inactive. Official "
-                "outcomes remain pending "
-                "until published."
-            )
-
-        st.info(message)
-
-        st.caption(
-            "Managed policy: review exit at "
-            "+25% / -20% of entry risk, "
-            "a target cross, opposing confirmed "
-            "EMA trend, or ≤75 seconds remaining. "
-            "Evaluated only while this dashboard "
-            "is open, at its refresh interval. "
-            "Stops are not guaranteed fills; "
-            "slippage can exceed this assumption. "
-            "Matched P&L compares the same "
-            "officially settled entry cohort; "
-            "early exits awaiting settlement "
-            "appear in history. Latest 200 entries "
-            "displayed; older events remain stored."
-        )
-
-        with st.expander(
-            "V4 paper history "
-            "· compare the same entries",
-            expanded=False,
-        ):
-            display = []
-
-            for row in rows:
-                entry = row["entry"]
-                final = row["final"]
-                exit_event = row["exit"]
-
-                observed = utc(
-                    entry["observed_at"]
-                )
-
-                display.append(
-                    {
-                        "Observed CT": (
-                            observed
-                            .astimezone(CT)
-                            .strftime(
-                                "%m/%d %H:%M:%S"
-                            )
-                        ),
-                        "Ticker": entry["ticker"],
-                        "Side": entry["side"],
-                        "Entry ¢": round(
-                            entry["price"] * 100,
-                            1,
-                        ),
-                        "Qty": entry["qty"],
-                        "Entry risk $": entry["risk"],
-                        "Fee estimate $": entry["fee"],
-                        "Break-even": (
-                            f"{entry['breakeven']:.1%}"
-                        ),
-                        "Managed net $": (
-                            final["managed_pnl"]
-                            if final
-                            else exit_event["pnl"]
-                            if exit_event
-                            else None
-                        ),
-                        "Hold net $": (
-                            final["hold_pnl"]
-                            if final
-                            else None
-                        ),
-                        "Official result": (
-                            final["outcome"]
-                            if final
-                            else "PENDING"
-                        ),
-                        "Exit": (
-                            final["exit_reason"]
-                            if final
-                            else exit_event["reason"]
-                            if exit_event
-                            else "OPEN"
-                        ),
-                    }
-                )
-
-            st.dataframe(
-                display,
-                hide_index=True,
-                use_container_width=True,
-            )
-
-            st.caption(
-                "Only observations recorded after "
-                "enabling this test are entered. "
-                "Historical chart arrows are never "
-                "backfilled as trades. All fills "
-                "and fees are estimates, not account "
-                "executions. The V4 sample is "
-                "separate from Early, Locked, "
-                "WATCH and V2 history."
-            )
+        paper_metrics(rows)
+        scan_status(kind, message, reasons)
 
     except Exception as exc:
-        st.session_state.pop(
-            "qe_v4_confirm",
-            None,
-        )
+        st.session_state.pop('qe_v4_confirm', None)
+
+        if rows is not None:
+            paper_metrics(rows)
+
+        message = 'PAPER DATA / STORAGE ISSUE · ' + str(exc)
 
         st.warning(
-            "V4 new entries / unverified exits "
-            "are paused: "
-            + str(exc)
+            'Scan paused. Saved history is preserved; '
+            'check history before retrying an interrupted save.'
         )
 
-        st.caption(
-            "Existing paper events are preserved. "
-            "No real orders are placed."
-        )
+        scan_status('ERROR', message, [message])
+
+    if rows is not None:
+        if not rows:
+            st.caption(
+                'No V4 entries recorded yet. Scan counts show activity; '
+                'P&L starts after a qualifying entry, then an exit '
+                'or official settlement.'
+            )
+
+        paper_history(rows)
+
+    st.caption(
+        'Managed policy: review exit at +25% / -20% of entry risk, '
+        'target cross, opposing confirmed EMA trend, or ≤75 seconds '
+        'left. Only evaluated while this dashboard is open. '
+        'Stops and liquidity are estimates. Matched totals include '
+        'only officially settled entries; early exits awaiting '
+        'settlement appear in history and Today realized.'
+    )
 
 
 def render_paper_engine(*args, **kwargs):
-    # The engine still executes while this panel is closed.
     with st.expander(
-        "🧪 Paper test · controls, P&L & history",
+        '🧪 Paper test · controls, P&L & history',
         expanded=False,
     ):
         _run_paper_engine(*args, **kwargs)
 
 
 def compact_chart_html(html):
-    """
-    Reset old saved Advanced Mode preferences on startup.
-    Extra indicators remain available through Advanced Mode.
-    """
+    """Reset old Advanced Mode preferences on startup."""
     html = html.replace(
         '<div class="panel">',
         '<div class="panel mainPanel">',
@@ -1408,11 +1294,8 @@ def compact_chart_html(html):
 
     html = re.sub(
         r'(<div id="help">.*?</div>)',
-        (
-            r'<details class="qe-notes">'
-            r'<summary>Chart notes · paper only</summary>'
-            r'\1</details>'
-        ),
+        r'<details class="qe-notes">'
+        r'<summary>Chart notes · paper only</summary>\1</details>',
         html,
         count=1,
         flags=re.S,
@@ -1424,36 +1307,25 @@ html,body{
  height:100%;
  min-height:0;
 }
-
 body{
  display:flex;
  flex-direction:column;
  overflow-y:auto;
 }
-
-#summary,
-#toolbar,
-#extras,
-#legend,
-#notice,
-.qe-notes{
+#summary,#toolbar,#extras,#legend,#notice,.qe-notes{
  flex-shrink:0;
 }
-
 .mainPanel{
  flex:1 0 260px;
  min-height:260px;
 }
-
 #main{
  height:100%!important;
  min-height:258px;
 }
-
 .optionalPanel{
  flex-shrink:0;
 }
-
 #toolbar{
  position:sticky;
  top:0;
@@ -1461,13 +1333,11 @@ body{
  background:#0b091b;
  padding:4px 0;
 }
-
 .qe-notes{
  font-size:10px;
  color:#bda9d5;
  padding:5px 2px;
 }
-
 .qe-notes summary{
  cursor:pointer;
  color:#bda9d5;
@@ -1475,31 +1345,23 @@ body{
 </style>
 """
 
-    html = html.replace(
-        "</head>",
-        css + "</head>",
-        1,
-    )
+    html = html.replace('</head>', css + '</head>', 1)
 
     reset = """
 advancedMode=false;
-
 for(const key of Object.keys(flags)){
  flags[key]=(key==='markers');
 }
-
 try{
  sessionStorage.removeItem(settingsKey);
 }catch(e){}
-
 window.scrollTo(0,0);
-
 start();
 requestResize();
 """
 
     html, count = re.subn(
-        r"\bstart\(\);\s*requestResize\(\);",
+        r'\bstart\(\);\s*requestResize\(\);',
         lambda match: reset,
         html,
         count=1,
@@ -1507,20 +1369,16 @@ requestResize();
 
     if count != 1:
         raise RuntimeError(
-            "Chart compatibility check failed: "
-            "clean-mode startup"
+            'Chart compatibility check failed: clean-mode startup'
         )
 
     return html
 
 
 def clean_chart_renderer(path):
-    """
-    Apply compact display defaults in memory.
-    The queens_live_chart.py file is not overwritten.
-    """
+    """Apply compact defaults without overwriting the chart module."""
     tree = ast.parse(
-        path.read_text(encoding="utf-8"),
+        path.read_text(encoding='utf-8'),
         filename=str(path),
     )
 
@@ -1531,29 +1389,21 @@ def clean_chart_renderer(path):
             self.generic_visit(node)
 
             is_chart_frame = (
-                isinstance(
-                    node.func,
-                    ast.Attribute,
-                )
-                and node.func.attr == "html"
-                and isinstance(
-                    node.func.value,
-                    ast.Name,
-                )
-                and node.func.value.id
-                == "components"
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == 'html'
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == 'components'
             )
 
             if is_chart_frame:
                 if not node.args:
                     raise RuntimeError(
-                        "Chart compatibility check "
-                        "failed: HTML argument"
+                        'Chart compatibility check failed: HTML argument'
                     )
 
                 node.args[0] = ast.Call(
                     func=ast.Name(
-                        id="compact_chart_html",
+                        id='compact_chart_html',
                         ctx=ast.Load(),
                     ),
                     args=[node.args[0]],
@@ -1561,15 +1411,10 @@ def clean_chart_renderer(path):
                 )
 
                 for keyword in node.keywords:
-                    if keyword.arg == "height":
-                        keyword.value = ast.Constant(
-                            value=620
-                        )
-
-                    elif keyword.arg == "scrolling":
-                        keyword.value = ast.Constant(
-                            value=True
-                        )
+                    if keyword.arg == 'height':
+                        keyword.value = ast.Constant(value=620)
+                    elif keyword.arg == 'scrolling':
+                        keyword.value = ast.Constant(value=True)
 
                 self.count += 1
 
@@ -1580,26 +1425,25 @@ def clean_chart_renderer(path):
 
     if transform.count != 1:
         raise RuntimeError(
-            "Chart compatibility check failed: "
-            "expected one chart frame"
+            'Chart compatibility check failed: expected one chart frame'
         )
 
     namespace = {
-        "__name__": "queens_edge_compact_chart",
-        "__file__": str(path),
-        "compact_chart_html": compact_chart_html,
+        '__name__': 'queens_edge_compact_chart',
+        '__file__': str(path),
+        'compact_chart_html': compact_chart_html,
     }
 
     exec(
         compile(
             ast.fix_missing_locations(tree),
             str(path),
-            "exec",
+            'exec',
         ),
         namespace,
     )
 
-    return namespace["render_live_chart"]
+    return namespace['render_live_chart']
 
 
 def expander_node(nodes, label):
@@ -1608,24 +1452,15 @@ def expander_node(nodes, label):
             ast.withitem(
                 context_expr=ast.Call(
                     func=ast.Attribute(
-                        value=ast.Name(
-                            id="st",
-                            ctx=ast.Load(),
-                        ),
-                        attr="expander",
+                        value=ast.Name(id='st', ctx=ast.Load()),
+                        attr='expander',
                         ctx=ast.Load(),
                     ),
-                    args=[
-                        ast.Constant(
-                            value=label
-                        )
-                    ],
+                    args=[ast.Constant(value=label)],
                     keywords=[
                         ast.keyword(
-                            arg="expanded",
-                            value=ast.Constant(
-                                value=False
-                            ),
+                            arg='expanded',
+                            value=ast.Constant(value=False),
                         )
                     ],
                 ),
@@ -1636,92 +1471,57 @@ def expander_node(nodes, label):
         type_comment=None,
     )
 
-    ast.copy_location(
-        wrapper,
-        nodes[0],
-    )
-
-    wrapper.end_lineno = (
-        nodes[-1].end_lineno
-    )
-
-    wrapper.end_col_offset = (
-        nodes[-1].end_col_offset
-    )
-
+    ast.copy_location(wrapper, nodes[0])
+    wrapper.end_lineno = nodes[-1].end_lineno
+    wrapper.end_col_offset = nodes[-1].end_col_offset
     return wrapper
 
 
 def compact_original(source):
-    """
-    Collapse existing display sections.
-
-    Tracker, strategy and history execution is preserved.
-    queens_original.py is not overwritten.
-    """
+    """Collapse display sections while preserving their execution."""
     tree = ast.parse(source)
 
     grid = next(
         (
             node
             for node in tree.body
-            if isinstance(
-                node,
-                ast.FunctionDef,
-            )
-            and node.name == "live_grid"
+            if isinstance(node, ast.FunctionDef)
+            and node.name == 'live_grid'
         ),
         None,
     )
 
     if grid is None:
         raise RuntimeError(
-            "Layout compatibility check "
-            "failed: live_grid"
+            'Layout compatibility check failed: live_grid'
         )
 
     start = None
     end = None
 
-    for index, node in enumerate(
-        grid.body
-    ):
+    for index, node in enumerate(grid.body):
         if (
             isinstance(node, ast.Expr)
-            and isinstance(
-                node.value,
-                ast.Call,
-            )
+            and isinstance(node.value, ast.Call)
         ):
             args = node.value.args
 
             if (
                 args
-                and isinstance(
-                    args[0],
-                    ast.Constant,
-                )
-                and "Paper auto-trader"
-                in str(args[0].value)
+                and isinstance(args[0], ast.Constant)
+                and 'Paper auto-trader' in str(args[0].value)
             ):
                 start = index
 
-        if (
-            start is not None
-            and isinstance(node, ast.With)
-        ):
+        if start is not None and isinstance(node, ast.With):
             existing_signals = any(
-                isinstance(
-                    item.context_expr,
-                    ast.Call,
-                )
+                isinstance(item.context_expr, ast.Call)
                 and item.context_expr.args
                 and isinstance(
                     item.context_expr.args[0],
                     ast.Constant,
                 )
-                and "Existing Bitcoin signals"
-                in str(
+                and 'Existing Bitcoin signals' in str(
                     item.context_expr.args[0].value
                 )
                 for item in node.items
@@ -1733,23 +1533,20 @@ def compact_original(source):
 
     if start is None or end is None:
         raise RuntimeError(
-            "Layout compatibility check failed: "
-            "safety-console boundaries"
+            'Layout compatibility check failed: safety-console boundaries'
         )
 
     grid.body[start:end] = [
         expander_node(
             grid.body[start:end],
-            "🛡️ Safety console · paper only",
+            '🛡️ Safety console · paper only',
         )
     ]
 
     tab_start = None
     tab_end = None
 
-    for index, node in enumerate(
-        tree.body
-    ):
+    for index, node in enumerate(tree.body):
         if isinstance(node, ast.Assign):
             names = {
                 child.id
@@ -1759,23 +1556,16 @@ def compact_original(source):
             }
 
             if {
-                "overview_tab",
-                "history_tab",
-                "diagnostics_tab",
+                'overview_tab',
+                'history_tab',
+                'diagnostics_tab',
             }.issubset(names):
                 tab_start = index
 
-        if (
-            tab_start is not None
-            and isinstance(node, ast.With)
-        ):
+        if tab_start is not None and isinstance(node, ast.With):
             last_tab = any(
-                isinstance(
-                    item.context_expr,
-                    ast.Name,
-                )
-                and item.context_expr.id
-                == "diagnostics_tab"
+                isinstance(item.context_expr, ast.Name)
+                and item.context_expr.id == 'diagnostics_tab'
                 for item in node.items
             )
 
@@ -1785,14 +1575,14 @@ def compact_original(source):
 
     if tab_start is None or tab_end is None:
         raise RuntimeError(
-            "Layout compatibility check failed: "
-            "history/performance boundaries"
+            'Layout compatibility check failed: '
+            'history/performance boundaries'
         )
 
     tree.body[tab_start:tab_end] = [
         expander_node(
             tree.body[tab_start:tab_end],
-            "📚 Performance, history & diagnostics",
+            '📚 Performance, history & diagnostics',
         )
     ]
 
@@ -1801,175 +1591,102 @@ def compact_original(source):
 
 def launch():
     original = (
-        Path(__file__).resolve().parent
-        / "queens_original.py"
+        Path(__file__).resolve().parent / 'queens_original.py'
     )
 
     if not original.is_file():
-        st.error(
-            "Missing queens_original.py "
-            "beside app.py"
-        )
+        st.error('Missing queens_original.py beside app.py')
         st.stop()
 
-    source = original.read_text(
-        encoding="utf-8"
-    )
+    source = original.read_text(encoding='utf-8')
 
     patches = [
         (
-            'c.metric("Indicative distance", '
-            'f"${abs(delta):,.2f}", '
-            '"ABOVE" if delta > 0 else '
-            '"BELOW" if delta < 0 else '
-            '"AT TARGET")',
-
-            'c.metric("Indicative distance", '
-            'f"${abs(delta):,.2f}", '
-            '"ABOVE" if delta > 0 else '
-            '"BELOW" if delta < 0 else '
-            '"AT TARGET", delta_color="off")',
-
-            "distance arrow",
+            'c.metric("Indicative distance", f"${abs(delta):,.2f}", '
+            '"ABOVE" if delta > 0 else "BELOW" if delta < 0 else "AT TARGET")',
+            'c.metric("Indicative distance", f"${abs(delta):,.2f}", '
+            '"ABOVE" if delta > 0 else "BELOW" if delta < 0 else "AT TARGET", '
+            'delta_color="off")',
+            'distance arrow',
         ),
-
         (
-            'side = st.radio("Side", '
-            '["YES", "NO"], horizontal=True, '
+            'side = st.radio("Side", ["YES", "NO"], horizontal=True, '
             'key=f"qe_calc_side_{series}")',
-
-            'side = st.radio('
-            '"Side · manual paper calculator", '
+            'side = st.radio("Side · manual paper calculator", '
             '["NONE", "YES", "NO"], horizontal=True, '
             'key=f"qe_calc_side_{series}")',
-
-            "paper calculator default",
+            'paper calculator default',
         ),
-
         (
+            'ask = yes_ask if side == "YES" else no_ask',
             'ask = yes_ask if side == "YES" '
-            'else no_ask',
-
-            'ask = yes_ask if side == "YES" '
-            'else no_ask if side == "NO" '
-            'else None',
-
-            "paper calculator safety",
+            'else no_ask if side == "NO" else None',
+            'paper calculator safety',
         ),
-
         (
-            '    st.markdown('
-            '"#### 📈 Live Bitcoin price action")\n'
+            '    st.markdown("#### 📈 Live Bitcoin price action")\n'
             '    frame = btc_candles()\n'
             '    qe_btc_chart(frame, strike)',
-
-            '    qe_close = parse_time('
-            'market.get("close_time") or '
-            'market.get("latest_expiration_time")) '
-            'if market else None\n'
-
-            '    qe_seconds = '
-            '(qe_close - datetime.now(timezone.utc))'
+            '    qe_close = parse_time(market.get("close_time") or '
+            'market.get("latest_expiration_time")) if market else None\n'
+            '    qe_seconds = (qe_close - datetime.now(timezone.utc))'
             '.total_seconds() if qe_close else None\n'
-
-            '    render_paper_engine('
-            'market, strike, qe_indicative_btc(), '
-            'qe_seconds, '
-            'verified_direction(market) '
-            'if market else False, '
-            'quote, btc_candles, '
-            'bool(errors.get(series)))\n'
-
-            '    with st.expander('
-            '"🔍 Original V3 diagnostics", '
+            '    render_paper_engine(market, strike, qe_indicative_btc(), '
+            'qe_seconds, verified_direction(market) if market else False, '
+            'quote, btc_candles, bool(errors.get(series)))\n'
+            '    with st.expander("🔍 Original V3 diagnostics", expanded=False):\n'
+            '        render_v3_guard(market, strike, qe_indicative_btc(), '
+            'qe_seconds, verified_direction(market) if market else False, '
+            'quote, btc_candles, bool(errors.get(series)))\n'
+            '    st.markdown("#### 📈 LIVE BITCOIN · STREAMING CHART")\n'
+            '    render_live_chart(strike, close_time=qe_close, '
+            'market_ticker=market.get("ticker") if market else None)\n'
+            '    with st.expander("📉 Original historical chart · Backup", '
             'expanded=False):\n'
-
-            '        render_v3_guard('
-            'market, strike, qe_indicative_btc(), '
-            'qe_seconds, '
-            'verified_direction(market) '
-            'if market else False, '
-            'quote, btc_candles, '
-            'bool(errors.get(series)))\n'
-
-            '    st.markdown('
-            '"#### 📈 LIVE BITCOIN · STREAMING CHART")\n'
-
-            '    render_live_chart('
-            'strike, close_time=qe_close, '
-            'market_ticker=market.get("ticker") '
-            'if market else None)\n'
-
-            '    with st.expander('
-            '"📉 Original historical chart · Backup", '
-            'expanded=False):\n'
-
             '        frame = btc_candles()\n'
             '        qe_btc_chart(frame, strike)',
-
-            "forward paper engine and live chart",
+            'forward paper engine and live chart',
         ),
     ]
 
     for before, after, label in patches:
         if source.count(before) != 1:
             st.error(
-                "Preview compatibility check failed: "
+                'Preview compatibility check failed: '
                 + label
-                + ". queens_original.py was not changed."
+                + '. queens_original.py was not changed.'
             )
             st.stop()
 
-        source = source.replace(
-            before,
-            after,
-            1,
-        )
+        source = source.replace(before, after, 1)
 
-    chart_path = (
-        original.parent
-        / "queens_live_chart.py"
-    )
+    chart_path = original.parent / 'queens_live_chart.py'
 
     try:
-        chart = clean_chart_renderer(
-            chart_path
-        )
+        chart = clean_chart_renderer(chart_path)
+        tree = compact_original(source)
 
-        tree = compact_original(
-            source
-        )
-
-    except (
-        RuntimeError,
-        OSError,
-        SyntaxError,
-    ) as exc:
+    except (RuntimeError, OSError, SyntaxError) as exc:
         st.error(
-            "Compact-layout compatibility "
-            "check failed: "
+            'Compact-layout compatibility check failed: '
             + str(exc)
         )
         st.stop()
 
     namespace = {
-        "__name__": "__main__",
-        "__file__": str(original),
-        "__package__": None,
-        "render_live_chart": chart,
-        "render_v3_guard": render_v3_guard,
-        "render_paper_engine": render_paper_engine,
+        '__name__': '__main__',
+        '__file__': str(original),
+        '__package__': None,
+        'render_live_chart': chart,
+        'render_v3_guard': render_v3_guard,
+        'render_paper_engine': render_paper_engine,
     }
 
     exec(
-        compile(
-            tree,
-            str(original),
-            "exec",
-        ),
+        compile(tree, str(original), 'exec'),
         namespace,
     )
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     launch()
