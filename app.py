@@ -759,116 +759,6 @@ def paper_metrics(rows):
         st.caption(f'Paper win rate (officially matched): {wins}/{len(finals)} = {wins/len(finals):.1%}. Estimated fills; not live results.')
 
 
-def edge_signals(df, spot, target, seconds, side=None):
-    """Conservative candle-derived risk warnings; not predictive guarantees.
-
-    Uses completed one-minute candles for momentum and slope. The live spot
-    contributes only to target distance. Missing/gapped candles fail closed.
-    """
-    base = {
-        'ready': False, 'reversal': 'DATA WAIT', 'lock': 'NO LOCK',
-        'warnings': ['Need consecutive recent candles for confirmation'],
-        'block_entry': True, 'side': side,
-    }
-    if df is None or target is None or spot is None or seconds is None:
-        return base
-    try:
-        import pandas as pd
-        if len(df) < 35:
-            return base
-        frame = df.tail(35).copy()
-        times = pd.to_datetime(frame['time'], utc=True, errors='coerce')
-        gaps = times.diff().dt.total_seconds().dropna()
-        if (times.isna().any() or times.duplicated().any()
-                or not gaps.between(45, 90).all()):
-            return base
-        closes = pd.to_numeric(frame['close'], errors='coerce')
-        highs = pd.to_numeric(frame['high'], errors='coerce')
-        lows = pd.to_numeric(frame['low'], errors='coerce')
-        if closes.isna().any() or highs.isna().any() or lows.isna().any():
-            return base
-        ema9 = closes.ewm(span=9, adjust=False).mean()
-        ema21 = closes.ewm(span=21, adjust=False).mean()
-        previous = closes.shift(1)
-        tr = pd.concat([(highs-lows).abs(), (highs-previous).abs(),
-                        (lows-previous).abs()], axis=1).max(axis=1)
-        atr = float(tr.tail(14).mean())
-        if not math.isfinite(atr) or atr <= 0:
-            return base
-        dist = float(spot) - float(target)
-        direction = 'ABOVE' if dist > 0 else 'BELOW' if dist < 0 else None
-        if side not in ('ABOVE', 'BELOW'):
-            side = direction
-        if side not in ('ABOVE', 'BELOW'):
-            return base
-        sign = 1 if side == 'ABOVE' else -1
-        slope = float(ema9.iloc[-1] - ema9.iloc[-4]) * sign
-        separation = float(ema9.iloc[-1] - ema21.iloc[-1]) * sign
-        momentum3 = float(closes.iloc[-1] - closes.iloc[-4]) * sign
-        momentum1 = float(closes.iloc[-1] - closes.iloc[-2]) * sign
-        prior_distance = abs(float(closes.iloc[-4]) - float(target))
-        compression = abs(dist) < prior_distance * 0.75
-        opposing = sum((slope < -0.25*atr, momentum3 < -0.6*atr,
-                        momentum1 < -0.25*atr, separation < 0))
-        cushion = max(50.0, 2*atr*math.sqrt(max(0.0, float(seconds))/60))
-        warnings = []
-        if dist * sign <= 0:
-            warnings.append('Spot is on the wrong side of the target')
-        if abs(dist) < cushion:
-            warnings.append('Target distance is inside the volatility cushion')
-        if compression and momentum3 < 0:
-            warnings.append('Distance to target is shrinking with opposing momentum')
-        if opposing >= 2:
-            warnings.append('Multiple short-term momentum/EMA reversal warnings')
-        if float(seconds) <= 90:
-            warnings.append('Final 90 seconds: elevated settlement flip risk')
-        reversal = ('HIGH REVERSAL RISK' if opposing >= 2 or
-                    (compression and abs(dist) < cushion)
-                    else 'WATCH REVERSAL' if warnings else 'NO EARLY WARNING')
-        strong = (dist * sign > 0 and abs(dist) >= 1.5*cushion and
-                  separation >= 0.35*atr and slope >= 0.25*atr and
-                  momentum3 >= 0.5*atr and momentum1 >= 0 and
-                  opposing == 0 and not compression and
-                  90 < float(seconds) <= 600)
-        return {
-            'ready': True, 'reversal': reversal,
-            'lock': 'STRONG SETTLEMENT LOCK' if strong else 'NO LOCK',
-            'warnings': warnings,
-            'block_entry': reversal == 'HIGH REVERSAL RISK',
-            'side': side, 'distance': dist, 'cushion': cushion,
-            'atr': atr, 'opposing': opposing,
-        }
-    except (KeyError, ValueError, TypeError, OverflowError, IndexError):
-        return base
-
-
-def render_edge_signals(signals, seconds, market, side):
-    """Secondary lock and primary risk warnings; never promises a win."""
-    c1, c2 = st.columns(2)
-    risk = signals['reversal']
-    if risk == 'HIGH REVERSAL RISK':
-        c1.error('⚠️ ' + risk)
-    elif risk in ('DATA WAIT', 'WATCH REVERSAL'):
-        c1.warning('⚠️ ' + risk)
-    else:
-        c1.info('REVERSAL · ' + risk)
-    lock = signals['lock']
-    if lock == 'STRONG SETTLEMENT LOCK':
-        c2.success('🔒 ' + lock + ' · ' + str(signals['side']))
-    else:
-        c2.caption('🔒 NO STRONG LOCK · wait for multiple confirmations')
-    if signals['warnings']:
-        st.caption(' · '.join(signals['warnings'][:3]))
-    if lock == 'STRONG SETTLEMENT LOCK':
-        ask = quote(market, signals['side'], 'ask')
-        if ask is None or ask + SLIPPAGE > ENTRY_CAP:
-            st.warning('TOO EXPENSIVE / HIGH RISK · Strong directional setup '
-                       'does not pass the 70¢ paper-entry price cap.')
-        else:
-            st.caption('Directional conditions agree, but a LOCK is not a '
-                       'guarantee. Quotes, liquidity and fees still govern entry.')
-
-
 def guidance_panel(market, verified, quote_fn, candle_fn, rows):
     """Paper-only, conservative guidance. No orders or automatic execution."""
     st.markdown('#### 👑 Trade guidance · paper only')
@@ -894,8 +784,6 @@ def guidance_panel(market, verified, quote_fn, candle_fn, rows):
         status = result.get('status')
         target = number(live.get('floor_strike'))
         distance = spot - target if target is not None else None
-        signals = edge_signals(df, spot, target, seconds, side)
-        render_edge_signals(signals, seconds, live, side)
         open_rows = [r for r in rows if not r['final'] and not r['exit']
                      and r['entry']['ticker'] == ticker]
         c1, c2, c3 = st.columns(3)
@@ -917,8 +805,6 @@ def guidance_panel(market, verified, quote_fn, candle_fn, rows):
                 else:
                     st.info('HOLD / MONITOR · No experimental exit trigger yet. '
                             'A sudden reversal can occur before the next scan.')
-        elif signals['block_entry']:
-            st.warning('WAIT · Early reversal or incomplete candle confirmation; no entry.')
         elif status == 'CANDIDATE' and side in ('ABOVE', 'BELOW'):
             st.success(('BUY UP' if side == 'ABOVE' else 'BUY DOWN')
                        + ' · PAPER CANDIDATE ONLY · Await entry filters and 10-second confirmation.')
@@ -1277,13 +1163,6 @@ def evaluate_papers(
             'Another paper window is still open. Waiting.',
             [],
         )
-
-    edge = edge_signals(df, live_spot, number(fresh_market.get('floor_strike')),
-                        seconds, result.get('side'))
-    if edge['block_entry']:
-        st.session_state.pop('qe_v4_confirm', None)
-        return ('FILTERED', 'WAIT · Reversal safety gate: ' + edge['reversal'],
-                edge['warnings'])
 
     proposed, reasons = candidate(
         fresh_market,
