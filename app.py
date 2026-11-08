@@ -1695,6 +1695,21 @@ def launch():
 
     source = original.read_text(encoding='utf-8')
 
+    # Reserve the chart's visual position immediately beneath the
+    # Bitcoin Command Center heading. The actual chart still executes
+    # later, once the market, strike, and close time are available.
+    chart_anchor = (
+        '    st.markdown("### 👑 BITCOIN COMMAND CENTER · PAPER MODE")'
+    )
+    if source.count(chart_anchor) != 1:
+        st.error('Preview compatibility check failed: chart anchor')
+        st.stop()
+    source = source.replace(
+        chart_anchor,
+        chart_anchor + '\n    qe_chart_slot = st.container()',
+        1,
+    )
+
     patches = [
         (
             'c.metric("Indicative distance", f"${abs(delta):,.2f}", '
@@ -1733,8 +1748,9 @@ def launch():
             '        render_v3_guard(market, strike, qe_indicative_btc(), '
             'qe_seconds, verified_direction(market) if market else False, '
             'quote, btc_candles, bool(errors.get(series)))\n'
-            '    st.markdown("#### 📈 LIVE BITCOIN · STREAMING CHART")\n'
-            '    render_live_chart(strike, close_time=qe_close, '
+            '    with qe_chart_slot:\n'
+        '        st.markdown("#### 📈 LIVE BITCOIN · STREAMING CHART")\n'
+            '        render_live_chart(strike, close_time=qe_close, '
             'market_ticker=market.get("ticker") if market else None)\n'
             '    with st.expander("📉 Original historical chart · Backup", '
             'expanded=False):\n'
