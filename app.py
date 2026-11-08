@@ -1715,8 +1715,73 @@ def qe_simple_status(market, errors, quote_fn, candle_fn, verified):
         return 'UNCERTAIN', 'WAIT', 'Live verification unavailable', None
 
 
-def qe_simple_header(market, errors, quote_fn, candle_fn, verified):
+def qe_stage_row(market, errors, verified, early, locked):
+    """Compact, color-coded view of existing paper calls; MID is provisional."""
+    from html import escape
+    import time as _time
+
+    ticker = str((market or {}).get('ticker') or '')
+    stamp = st.session_state.get('last_good_times', {}).get('KXBTC15M')
+    fresh = bool(market and not errors and stamp is not None and
+                 0 <= _time.time() - stamp <= 15)
+    yes_bid = quote(market, 'yes', 'bid') if market else None
+    yes_ask = quote(market, 'yes', 'ask') if market else None
+    no_bid = quote(market, 'no', 'bid') if market else None
+    no_ask = quote(market, 'no', 'ask') if market else None
+    quotes_ok = (fresh and verified and all(
+        v is not None and 0 <= v <= 1
+        for v in (yes_bid, yes_ask, no_bid, no_ask))
+        and yes_bid <= yes_ask and no_bid <= no_ask)
+    mid = (yes_bid + yes_ask) / 2 if quotes_ok else None
+    close = utc((market or {}).get('close_time'))
+    remaining = (close - now_utc()).total_seconds() if close else None
+
+    early_value = str(early.get('call') or 'WAIT') if early else 'WAIT'
+    lock_status = str(locked.get('status') or '').lower() if locked else ''
+    lock_value = str(locked.get('call') or 'WAIT') if locked else 'WAIT'
+    # A saved pending lock is NOT a verified settlement result.
+    lock_note = lock_status.upper() if lock_status else 'Not recorded'
+    if remaining is None or remaining <= 0:
+        mid_value, mid_note = 'WAIT', 'Cycle ending / rollover'
+    elif remaining > 450:
+        mid_value, mid_note = 'WAIT', 'Awaiting mid window'
+    elif not quotes_ok or mid is None:
+        mid_value, mid_note = 'WAIT', 'Quotes unverified / stale'
+    elif mid >= .60:
+        mid_value, mid_note = 'ABOVE', 'Provisional market lean'
+    elif mid <= .40:
+        mid_value, mid_note = 'BELOW', 'Provisional market lean'
+    else:
+        mid_value, mid_note = 'WAIT', 'No clear market lean'
+
+    def card(label, value, note):
+        v = str(value).upper()
+        color = ('#53E7AB' if v in ('ABOVE', 'UP', 'YES')
+                 else '#FF718E' if v in ('BELOW', 'DOWN', 'NO')
+                 else '#F5C96B')
+        st.markdown(
+            '<div style="background:#261738;border:1px solid #5d397f;'
+            'border-radius:12px;padding:10px 5px;text-align:center;min-height:95px">'
+            f'<div style="font-size:.78rem;color:#D8C1EB;font-weight:700">{escape(label)}</div>'
+            f'<div style="font-size:1.2rem;font-weight:900;color:{color};margin:4px 0">{escape(v)}</div>'
+            f'<div style="font-size:.67rem;color:#B6A0CD">{escape(note)}</div></div>',
+            unsafe_allow_html=True)
+
+    st.markdown('**👑 EARLY · MID · LOCK**')
+    a, b, c = st.columns(3, gap='small')
+    with a:
+        card('🌅 EARLY', early_value, 'Recorded call' if early else 'Awaiting signal')
+    with b:
+        card('⚡ MID', mid_value, mid_note)
+    with c:
+        card('🔒 LOCK', lock_value, lock_note)
+    st.caption('MID is a provisional Kalshi quote lean, not a saved prediction. '
+               'EARLY and LOCK reflect existing recorded paper calls.')
+
+
+def qe_simple_header(market, errors, quote_fn, candle_fn, verified, early=None, locked=None):
     """Only essentials above the chart; other tools stay collapsible."""
+    qe_stage_row(market, errors, verified, early, locked)
     close = utc((market or {}).get('close_time'))
     now = now_utc()
     remaining = max(0, int((close - now).total_seconds())) if close else None
@@ -1771,10 +1836,10 @@ def launch():
     source = source.replace(
         '    qe_compact_summary(name, series, market, errors)\n'
         '    qe_visible_signal_panel(market, series)',
-        '    qe_simple_header(market, errors, quote, btc_candles, verified_direction(market) if market else False)',
+        '    qe_simple_header(market, errors, quote, btc_candles, verified_direction(market) if market else False, early_map.get(market.get("ticker")) if market else None, locked_map.get(market.get("ticker")) if market else None)',
         1,
     )
-    if '    qe_simple_header(market, errors, quote, btc_candles, verified_direction(market) if market else False)' not in source:
+    if '    qe_simple_header(market, errors, quote, btc_candles, verified_direction(market) if market else False, early_map.get(market.get("ticker")) if market else None, locked_map.get(market.get("ticker")) if market else None)' not in source:
         st.error('Preview compatibility check failed: simplified header')
         st.stop()
 
