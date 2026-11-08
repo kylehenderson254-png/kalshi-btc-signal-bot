@@ -1684,6 +1684,60 @@ def compact_original(source):
     return ast.fix_missing_locations(tree)
 
 
+def qe_simple_status(market, errors, quote_fn, candle_fn, verified):
+    """Conservative summary; no new strategy or order logic."""
+    ticker = str((market or {}).get('ticker') or '')
+    if not ticker.startswith('KXBTC15M-') or errors or not verified:
+        return 'UNCERTAIN', 'WAIT', 'Market unavailable or quote feed stale', None
+    try:
+        df, source, feed_errors, _ = _get_candles(candle_fn)
+        live, quote_at, spot, trade_at = fresh_snapshot(ticker)
+        close = utc(live.get('close_time'))
+        seconds = (close - now_utc()).total_seconds() if close else -1
+        if seconds <= 0 or live.get('status') != 'active':
+            return 'UNCERTAIN', 'WAIT', 'No active settlement window', None
+        result = assess(live, live.get('floor_strike'), spot, df,
+                        seconds, bool(verified), quote_fn, False, source)
+        trend = str(result.get('ema_trend') or 'UNCERTAIN')
+        if trend not in ('UPWARD', 'DOWNWARD'):
+            trend = 'UNCERTAIN'
+        age = result.get('candle_age')
+        if (not snapshot_current(quote_at, trade_at) or age is None
+                or not -3 <= age <= 90 or df is None):
+            return 'UNCERTAIN', 'WAIT', 'Candle or quote data needs refreshing', live
+        if result.get('status') == 'CANDIDATE':
+            side = result.get('side')
+            if side in ('ABOVE', 'BELOW'):
+                return trend, 'WAIT', (side + ' setup detected; paper entry risk checks pending'), live
+        reasons = result.get('reasons') or []
+        return trend, 'WAIT', str(reasons[0]) if reasons else 'Awaiting confirmation', live
+    except Exception:
+        return 'UNCERTAIN', 'WAIT', 'Live verification unavailable', None
+
+
+def qe_simple_header(market, errors, quote_fn, candle_fn, verified):
+    """Only essentials above the chart; other tools stay collapsible."""
+    close = utc((market or {}).get('close_time'))
+    now = now_utc()
+    remaining = max(0, int((close - now).total_seconds())) if close else None
+    now_ct = now.astimezone(CT).strftime('%I:%M:%S %p').lstrip('0')
+    left, right = st.columns(2)
+    left.metric('🕒 CENTRAL TIME', now_ct)
+    right.metric('⏳ SETTLEMENT IN',
+                 f'{remaining//60:02d}:{remaining%60:02d}' if remaining is not None else '—')
+    direction, signal, reason, fresh = qe_simple_status(market, errors, quote_fn, candle_fn, verified)
+    a, b = st.columns(2)
+    a.metric('📉 MARKET DIRECTION', direction)
+    b.metric('👑 QUEEN’S SIGNAL', signal)
+    st.caption(reason + ' · Paper observation only; no automatic orders.')
+    yes = quote(fresh, 'ABOVE', 'ask') if fresh else None
+    no = quote(fresh, 'BELOW', 'ask') if fresh else None
+    # The helper quote uses live Kalshi dollar quotes; never fabricate a price.
+    c, d = st.columns(2)
+    c.metric('🟢 ABOVE · ASK', f'{yes*100:.1f}¢' if yes is not None else '—')
+    d.metric('🔴 BELOW · ASK', f'{no*100:.1f}¢' if no is not None else '—')
+
+
 def launch():
     original = (
         Path(__file__).resolve().parent / 'queens_original.py'
@@ -1694,6 +1748,10 @@ def launch():
         st.stop()
 
     source = original.read_text(encoding='utf-8')
+    source = source.replace(
+        'st.caption(\n    "⚡ Live Kalshi quotes · "\n    "🔐 Dual Strong LOCK · "\n    "🐋 Pressure Radar · "\n    "📊 Paper Performance"\n)\n',
+        '', 1,
+    )
 
     # Reserve the chart's visual position immediately beneath the
     # Bitcoin Command Center heading. The actual chart still executes
@@ -1709,6 +1767,16 @@ def launch():
         chart_anchor + '\n    qe_chart_slot = st.container()',
         1,
     )
+
+    source = source.replace(
+        '    qe_compact_summary(name, series, market, errors)\n'
+        '    qe_visible_signal_panel(market, series)',
+        '    qe_simple_header(market, errors, quote, btc_candles, verified_direction(market) if market else False)',
+        1,
+    )
+    if '    qe_simple_header(market, errors, quote, btc_candles, verified_direction(market) if market else False)' not in source:
+        st.error('Preview compatibility check failed: simplified header')
+        st.stop()
 
     patches = [
         (
@@ -1741,11 +1809,12 @@ def launch():
             'market.get("latest_expiration_time")) if market else None\n'
             '    qe_seconds = (qe_close - datetime.now(timezone.utc))'
             '.total_seconds() if qe_close else None\n'
-            '    render_paper_engine(market, strike, qe_indicative_btc(), '
+            '    with st.expander("⚙️ Advanced Tools · paper P&L, diagnostics & history", expanded=False):\n'
+            '        render_paper_engine(market, strike, qe_indicative_btc(), '
             'qe_seconds, verified_direction(market) if market else False, '
             'quote, btc_candles, bool(errors.get(series)))\n'
-            '    with st.expander("🔍 Original V3 diagnostics", expanded=False):\n'
-            '        render_v3_guard(market, strike, qe_indicative_btc(), '
+            '        with st.expander("🔍 Original V3 diagnostics", expanded=False):\n'
+            '            render_v3_guard(market, strike, qe_indicative_btc(), '
             'qe_seconds, verified_direction(market) if market else False, '
             'quote, btc_candles, bool(errors.get(series)))\n'
             '    with qe_chart_slot:\n'
@@ -1791,6 +1860,7 @@ def launch():
         'render_live_chart': chart,
         'render_v3_guard': render_v3_guard,
         'render_paper_engine': render_paper_engine,
+        'qe_simple_header': qe_simple_header,
     }
 
     exec(
