@@ -368,7 +368,6 @@ class PaperJournal:
             return list(pool.map(load, names))
 
 
-@st.cache_resource(show_spinner=False)
 def journal(url, key):
     return PaperJournal(url, key)
 
@@ -728,7 +727,7 @@ def daily_pnl(rows):
 
 def paper_metrics(rows):
     finals = [row for row in rows if row['final']]
-    cols = st.columns(4)
+    cols = st.columns(2)
 
     managed = sum(
         row['final']['managed_pnl']
@@ -747,14 +746,96 @@ def paper_metrics(rows):
         'Matched settlement P&L',
         f'${settlement:+.2f}',
     )
-    cols[2].metric(
+    cols[0].metric(
         'Paper entries / official outcomes',
         f'{len(rows)} / {len(finals)}',
     )
-    cols[3].metric(
+    cols[1].metric(
         'Today · managed realized',
         f'${daily_pnl(rows):+.2f}',
     )
+    if finals:
+        wins = sum(row['final']['managed_pnl'] > 0 for row in finals)
+        st.caption(f'Paper win rate (officially matched): {wins}/{len(finals)} = {wins/len(finals):.1%}. Estimated fills; not live results.')
+
+
+def guidance_panel(market, verified, quote_fn, candle_fn, rows):
+    """Paper-only, conservative guidance. No orders or automatic execution."""
+    st.markdown('#### 👑 Trade guidance · paper only')
+    ticker = str((market or {}).get('ticker') or '')
+    if not ticker.startswith('KXBTC15M-'):
+        st.info('WAIT · No active 15-minute BTC contract.')
+        return
+    try:
+        df, feed_name, feed_errors, clock = _get_candles(candle_fn)
+        live, quoted_at, spot, trade_at = fresh_snapshot(ticker)
+        close = utc(live.get('close_time'))
+        seconds = (close - now_utc()).total_seconds() if close else 0
+        if live.get('status') != 'active' or seconds <= 0:
+            st.info('WAIT · Contract inactive or closed.')
+            return
+        result = assess(live, live.get('floor_strike'), spot, df,
+                        seconds, bool(verified), quote_fn, False, feed_name)
+        if not snapshot_current(quoted_at, trade_at):
+            st.warning('WAIT · Market data aged during analysis.')
+            return
+        trend = result.get('ema_trend')
+        side = result.get('side')
+        status = result.get('status')
+        target = number(live.get('floor_strike'))
+        distance = spot - target if target is not None else None
+        open_rows = [r for r in rows if not r['final'] and not r['exit']
+                     and r['entry']['ticker'] == ticker]
+        c1, c2, c3 = st.columns(3)
+        c1.metric('BTC vs target', f'${distance:+,.2f}' if distance is not None else '—')
+        c2.metric('Time remaining', f'{max(0, int(seconds)) // 60}:{max(0, int(seconds)) % 60:02d}')
+        c3.metric('EMA trend', str(trend or 'UNCONFIRMED'))
+        if open_rows:
+            for row in open_rows:
+                entry = row['entry']
+                estimate = exit_estimate(entry, live)
+                if estimate is None:
+                    st.warning('OPEN PAPER POSITION · Exit quote/size unavailable; do not assume a fill.')
+                    continue
+                reason = close_reason(entry, estimate, spot, trend, seconds)
+                st.metric('Estimated exit P&L · paper', f"${estimate['pnl']:+.2f}")
+                if reason:
+                    st.error('EXIT REVIEW · ' + reason + ' · estimated exit '
+                             + f"{estimate['price']*100:.0f}¢")
+                else:
+                    st.info('HOLD / MONITOR · No experimental exit trigger yet. '
+                            'A sudden reversal can occur before the next scan.')
+        elif status == 'CANDIDATE' and side in ('ABOVE', 'BELOW'):
+            st.success(('BUY UP' if side == 'ABOVE' else 'BUY DOWN')
+                       + ' · PAPER CANDIDATE ONLY · Await entry filters and 10-second confirmation.')
+            st.caption('Not an instruction to place a real order. Liquidity, fees and '
+                       'the current contract price must pass the paper entry checks.')
+        else:
+            reasons = result.get('reasons') or []
+            st.info('WAIT / NO TRADE · ' + ('; '.join(map(str, reasons[:3]))
+                                         if reasons else 'No confirmed entry setup.'))
+        if distance is not None and df is not None and len(df) >= 14:
+            try:
+                import pandas as pd
+                prev = df['close'].shift(1)
+                tr = pd.concat([(df['high']-df['low']).abs(),
+                                (df['high']-prev).abs(),
+                                (df['low']-prev).abs()], axis=1).max(axis=1)
+                atr = float(tr.tail(14).mean())
+                cushion = max(50.0, 2 * atr * math.sqrt(max(seconds, 0)/60))
+                if abs(distance) < cushion:
+                    st.warning('FLIP RISK · BTC is inside the volatility-adjusted '
+                               'target cushion. Treat either direction cautiously.')
+            except (KeyError, ValueError, TypeError, OverflowError):
+                pass
+        with st.expander('Signal diagnostics · paper only', expanded=False):
+            st.write({'status': status, 'side': side, 'trend': trend,
+                      'candle_source': feed_name, 'feed_errors': feed_errors,
+                      'reasons': result.get('reasons', [])})
+    except Exception as exc:
+        st.warning('WAIT · Guidance unavailable; no signal issued.')
+        with st.expander('Guidance diagnostics', expanded=False):
+            st.code(str(exc))
 
 
 def scan_status(kind, message, reasons=None):
@@ -783,7 +864,12 @@ def scan_status(kind, message, reasons=None):
         message=message,
     )
 
-    st.info(message)
+    if kind == 'ERROR':
+        st.error('Paper scanner paused · open diagnostics for details.')
+    elif kind == 'ENTRY':
+        st.success(message)
+    else:
+        st.caption(message)
 
     with st.expander(
         'Paper scanner · health & blocking reasons',
@@ -800,6 +886,7 @@ def scan_status(kind, message, reasons=None):
         )
         st.write('Scans this session:', health['scans'])
         st.write('Scan results:', health['counts'])
+        st.write('Last message:', health.get('message'))
 
         st.dataframe(
             [
@@ -1249,10 +1336,7 @@ def _run_paper_engine(
 
         message = 'PAPER DATA / STORAGE ISSUE · ' + str(exc)
 
-        st.warning(
-            'Scan paused. Saved history is preserved; '
-            'check history before retrying an interrupted save.'
-        )
+        st.caption('Scan paused. Existing saved history is not deleted; verify interrupted saves before retrying.')
 
         scan_status('ERROR', message, [message])
 
@@ -1277,10 +1361,21 @@ def _run_paper_engine(
 
 
 def render_paper_engine(*args, **kwargs):
-    with st.expander(
-        '🧪 Paper test · controls, P&L & history',
-        expanded=False,
-    ):
+    # Guidance stays visible above the preserved live chart.
+    # Read-only journal access; any storage problem fails closed.
+    rows = []
+    try:
+        url = st.secrets.get('SUPABASE_URL')
+        key = st.secrets.get('SUPABASE_SERVICE_ROLE_KEY')
+        if url and key:
+            rows = journal(str(url), str(key)).rows()
+    except Exception:
+        pass
+    guidance_panel(args[0] if len(args) > 0 else kwargs.get('market'),
+                   args[4] if len(args) > 4 else kwargs.get('verified', False),
+                   args[5] if len(args) > 5 else kwargs.get('quote_fn'),
+                   args[6] if len(args) > 6 else kwargs.get('candle_fn'), rows)
+    with st.expander('🧪 Paper test · controls, P&L & history', expanded=False):
         _run_paper_engine(*args, **kwargs)
 
 
