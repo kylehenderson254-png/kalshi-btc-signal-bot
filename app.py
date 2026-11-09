@@ -1,27 +1,28 @@
 
 """
 QUEEN'S EDGE | 254
-LIVE BITCOIN CHART RECOVERY
+LIVE CHART RECOVERY — CLEAN ENTRY POINT
 
 PAPER ONLY — NO REAL ORDERS
 
-This entry point restores the original Coinbase
-streaming chart renderer without modifying its
-JavaScript or changing the existing paper engine.
+This file launches the existing Queen's Edge
+dashboard without monkey-patching the chart,
+Streamlit HTML components, or layout functions.
 
-Required companion files:
-- queens_preview_base.py
-- queens_original.py
-- queens_live_chart.py
-- queens_v3_guard.py
+The existing base module remains responsible for:
+- Purple/black dashboard
+- Coinbase BTC streaming chart
+- EMA, RSI and WATCH indicators
+- Kalshi market information
+- EARLY, MID and LOCK displays
+- V4 paper scanner and history
+- Paper P&L and settlement tracking
 
-This is a chart recovery release.
-It does not add automatic STRONG LOCK paper entries.
+No real-money orders are submitted.
 """
 
-import ast
-import importlib.util
 from pathlib import Path
+import traceback
 
 import streamlit as st
 
@@ -36,9 +37,9 @@ REQUIRED_FILES = (
 )
 
 missing = [
-    name
-    for name in REQUIRED_FILES
-    if not (ROOT / name).is_file()
+    filename
+    for filename in REQUIRED_FILES
+    if not (ROOT / filename).is_file()
 ]
 
 if missing:
@@ -49,163 +50,43 @@ if missing:
     st.stop()
 
 
-# -------------------------------------------------
-# LOAD EXISTING QUEEN'S EDGE BASE
-# -------------------------------------------------
-
-BASE_FILE = ROOT / "queens_preview_base.py"
-
-spec = importlib.util.spec_from_file_location(
-    "queens_preview_base",
-    BASE_FILE,
-)
-
-if spec is None or spec.loader is None:
-    st.error(
-        "Queen's Edge base module could not be loaded."
-    )
-    st.stop()
-
-base = importlib.util.module_from_spec(spec)
-
-try:
-    spec.loader.exec_module(base)
-except Exception as exc:
-    st.error("Queen's Edge initialization failed.")
-    st.exception(exc)
-    st.stop()
-
-
-# -------------------------------------------------
-# RESTORE ORIGINAL STREAMING CHART RENDERER
-# -------------------------------------------------
-
-# The existing chart already supports Coinbase
-# WebSocket updates, candles, indicators and WATCH
-# signals.
-#
-# Use that renderer directly. Do not apply another
-# HTML or JavaScript startup transformation.
-
-original_chart_renderer = base.render_live_chart
-
-
-def use_original_chart_renderer(path):
-    """
-    Keep the existing streaming chart implementation.
-
-    The path is supplied by the base compatibility
-    loader, but the already-imported renderer is used
-    directly.
-    """
-    if not Path(path).is_file():
-        raise RuntimeError(
-            "Streaming chart module is missing."
-        )
-
-    return original_chart_renderer
-
-
-base.clean_chart_renderer = use_original_chart_renderer
-
-
-# -------------------------------------------------
-# REPAIR CHART CONTAINER OWNERSHIP
-# -------------------------------------------------
-
-# Capture the original layout transformer BEFORE
-# overriding it. This avoids calling the replacement
-# recursively.
-
-original_layout_transformer = base.compact_original
-
-
-class LocalChartContainer(ast.NodeTransformer):
-    """
-    Replace the chart's external placeholder with
-    a local container at its actual render location.
-
-    This does not change the paper scanner, signals,
-    market calculations or historical records.
-    """
-
-    def __init__(self):
-        self.replacements = 0
-
-    def visit_With(self, node):
-        self.generic_visit(node)
-
-        for item in node.items:
-            expression = item.context_expr
-
-            if (
-                isinstance(expression, ast.Name)
-                and expression.id == "qe_chart_slot"
-            ):
-                item.context_expr = ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Name(
-                            id="st",
-                            ctx=ast.Load(),
-                        ),
-                        attr="container",
-                        ctx=ast.Load(),
-                    ),
-                    args=[],
-                    keywords=[],
-                )
-
-                self.replacements += 1
-
-        return node
-
-
-def recover_chart_layout(source):
-    """
-    Apply the existing compact dashboard layout,
-    then repair only the chart container.
-
-    Never call base.compact_original from here,
-    because that name now refers to this function.
-    """
-
-    tree = original_layout_transformer(source)
-
-    repair = LocalChartContainer()
-    tree = repair.visit(tree)
-
-    if repair.replacements != 1:
-        raise RuntimeError(
-            "Chart compatibility check failed: "
-            "expected one chart container, found "
-            + str(repair.replacements)
-        )
-
-    return ast.fix_missing_locations(tree)
-
-
-base.compact_original = recover_chart_layout
-
-
-# -------------------------------------------------
-# START EXISTING QUEEN'S EDGE DASHBOARD
-# -------------------------------------------------
-
 def main():
     try:
-        base.launch()
+        # Import the original dashboard engine.
+        # Do not override components.html.
+        # Do not override compact_original.
+        # Do not override clean_chart_renderer.
+        from queens_preview_base import launch
+
+        launch()
 
     except Exception as exc:
         st.error(
-            "Queen's Edge encountered a startup error."
+            "Queen's Edge encountered an error."
         )
 
-        st.exception(exc)
+        st.write(
+            "Error type:",
+            type(exc).__name__,
+        )
+
+        st.write(
+            "Error message:",
+            str(exc),
+        )
+
+        with st.expander(
+            "Full Python diagnostics",
+            expanded=False,
+        ):
+            st.code(
+                traceback.format_exc(),
+                language="text",
+            )
 
         st.caption(
-            "No real orders are placed by this "
-            "application. Existing paper records "
-            "are not intentionally modified."
+            "Paper-only dashboard. "
+            "No real orders are sent."
         )
 
 
