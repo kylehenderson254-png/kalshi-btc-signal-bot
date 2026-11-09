@@ -642,10 +642,7 @@ def assess(
 
     distance = abs(spot - strike)
 
-    minimum_distance = max(
-        50.0,
-        spot * 0.0007,
-    )
+    minimum_distance = 25.0  # Paper-test threshold; other filters remain active
 
     if direction is None:
         reasons.append(
