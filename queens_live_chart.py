@@ -835,6 +835,8 @@ function detectReversals(close,e9,e21,rv,mc){
   if(!values.every(Number.isFinite))continue;
 
   if(bars[i].time-bars[i-2].time!==120)continue;
+  // Never label a reversal across a missing 1-minute candle.
+  if(i<59||bars[i].time-bars[i-59].time!==59*60)continue;
 
   const slope=e9[i]-e9[i-1];
   const previousSlope=e9[i-1]-e9[i-2];
@@ -1160,10 +1162,11 @@ function calculate(){
    ?rv[i].toFixed(1)
    :'—';
 
- markers=
-  fresh()&&!recentGap()&&bars.length>=60
-   ?detectReversals(close,e9,e21,rv,mc)
-   :[];
+ // Retain historical arrows from verified contiguous periods.
+ // The gap warning still blocks new actionable WATCH notices.
+ markers=bars.length>=60
+  ?detectReversals(close,e9,e21,rv,mc)
+  :[];
 
  series.candles.setMarkers(
   flags.markers?markers:[]
@@ -1521,32 +1524,8 @@ async function pollFallback(){
  }
 }
 
-function health(){
+function updateCountdown(){
  if(dead)return;
-
- const age=lastTick
-  ?(Date.now()-lastTick)/1000
-  :null;
-
- if(fresh()){
-  setStatus(
-   'LIVE · '+
-   feed+
-   ' · '+
-   Math.max(0,age).toFixed(0)+
-   's',
-   green
-  );
- }else{
-  setStatus(
-   lastTick
-    ?'STALE · '+Math.max(0,age).toFixed(0)+'s'
-    :'WAITING FOR TRADE'
-  );
-
-  series.candles?.setMarkers([]);
- }
-
  if(CONFIG.closeMs!==null){
   const sec=Math.max(
    0,
@@ -1571,6 +1550,35 @@ function health(){
    'Target snapshot · confirm current contract';
  }
 
+}
+
+function health(){
+ if(dead)return;
+
+ const age=lastTick
+  ?(Date.now()-lastTick)/1000
+  :null;
+
+ if(fresh()){
+  setStatus(
+   'LIVE · '+
+   feed+
+   ' · '+
+   Math.max(0,age).toFixed(0)+
+   's',
+   green
+  );
+ }else{
+  setStatus(
+   lastTick
+    ?'STALE · '+Math.max(0,age).toFixed(0)+'s'
+    :'WAITING FOR TRADE'
+  );
+
+ }
+
+ updateCountdown();
+
  if(expired()){
   series.candles?.setMarkers([]);
  }
@@ -1587,6 +1595,8 @@ function health(){
 }
 
 let healthTimer=null;
+let countdownTimer=null;
+let historyTimer=null;
 let pollTimer=null;
 
 function start(){
@@ -1769,6 +1779,10 @@ function start(){
  load().finally(connect);
 
  healthTimer=setInterval(health,1000);
+ countdownTimer=setInterval(updateCountdown,250);
+ historyTimer=setInterval(()=>{
+  if(!dead&&recentGap()&&!loading)load();
+ },30000);
  pollTimer=setInterval(pollFallback,4000);
 
  health();
@@ -1786,6 +1800,8 @@ window.addEventListener('pagehide',()=>{
  }
 
  clearInterval(healthTimer);
+ clearInterval(countdownTimer);
+ clearInterval(historyTimer);
  clearInterval(pollTimer);
 
  socket?.close();
