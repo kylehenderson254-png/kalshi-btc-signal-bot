@@ -2220,6 +2220,18 @@ def qe_simple_header(market, errors, quote_fn, candle_fn, verified, early=None, 
     c.metric('🟢 ABOVE · ASK', f'{yes*100:.1f}¢' if yes is not None else '—')
     d.metric('🔴 BELOW · ASK', f'{no*100:.1f}¢' if no is not None else '—')
 def launch():
+    # Keep the existing fragment scanner and all Streamlit status/error UI.
+    # Only counteract the stale-element fade during fragment rerenders.
+    st.markdown("""
+    <style>
+    [data-testid="stFragment"] [data-stale="true"],
+    [data-testid="stFragment"][data-stale="true"],
+    [data-testid="stAppViewContainer"] [data-stale="true"] {
+        opacity: 1 !important;
+        filter: none !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
     original = (
         Path(__file__).resolve().parent / 'queens_original.py'
     )
