@@ -26,9 +26,9 @@ BUCKET = 'queens-edge-paper-v4'
 CT = ZoneInfo('America/Chicago')
 
 RISK = 5.0
-ENTRY_CAP = 0.56  # Effective fill including 1c slippage; 50-55c displayed ask preferred
-MIN_ASK = 0.50
-MAX_ASK = 0.55
+ENTRY_CAP = 0.61  # Effective fill including 1c slippage; 45-60c displayed ask
+MIN_ASK = 0.45
+MAX_ASK = 0.60
 SHADOW_TARGETS = (0.70, 0.75, 0.80)
 SLIPPAGE = 0.01
 TAKE_PROFIT = 0.25
@@ -563,7 +563,7 @@ def candidate(market, result, df, spot, multiplier):
 
     if not MIN_ASK <= ask <= MAX_ASK or not 0 < price <= ENTRY_CAP:
         return None, [
-            'Entry must be 50–55¢ ask, with 1¢ estimated adverse slippage'
+            'Entry must be 45–60¢ ask, with 1¢ estimated adverse slippage'
         ]
 
     qty, entry_fee, risk = size_for(price, multiplier)
@@ -1249,7 +1249,7 @@ def evaluate_papers(
         'fee_model': (
             'Estimated quadratic taker, whole-cent assumed fills'
         ),
-        'strategy': 'V4-settlement-50-55-shadow-v1',
+        'strategy': 'V4-settlement-45-60-shadow-v2',
         'take_profit_fraction': TAKE_PROFIT,
         'loss_review_fraction': STOP_REVIEW,
         'entry_cap': ENTRY_CAP,
@@ -1298,7 +1298,7 @@ def _run_paper_engine(
     )
 
     st.caption(
-        'Settlement test: preferred ask 50–55¢; $5 maximum including fees; '
+        'Settlement test: preferred ask 45–60¢; $5 maximum including fees; '
         'spread ≤3¢; '
         '1¢ adverse slippage; two eligible observations at least '
         '10 seconds apart. Hold until settlement; shadow 70/75/80¢ exits. '
