@@ -1,16 +1,17 @@
 
 """QUEEN'S EDGE | 254
-Bull & Bear Dashboard — Signal Fix V3
+Compact Dashboard V4 — Layout Tightening
 
 PAPER ONLY. NO REAL ORDERS.
 
-Required existing files:
-    queens_preview_base.py
-    queens_original.py
-    queens_live_chart.py
-    queens_v3_guard.py
+Preserves:
+- Original bull and bear branding
+- Existing V4 scanner and entry filters
+- Historical EARLY signal protection
+- Saved paper BUY / TP / EXIT markers
+- Official and estimated paper P&L
 
-This wrapper preserves the existing V4 strategy.
+Only app.py should be replaced.
 """
 
 import importlib.util
@@ -21,10 +22,11 @@ from html import escape
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 # ============================================================
-# LOAD EXISTING QUEEN'S EDGE
+# LOAD ORIGINAL QUEEN'S EDGE
 # ============================================================
 
 ROOT = Path(__file__).resolve().parent
@@ -40,9 +42,11 @@ spec = importlib.util.spec_from_file_location(
 base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
 
+VERSION = "COMPACT V4 · SIGNAL FIX V3"
+
 
 # ============================================================
-# COMPLETE SAVED V4 PAPER HISTORY
+# COMPLETE V4 PAPER JOURNAL
 # ============================================================
 
 def all_paper_rows(self):
@@ -67,7 +71,7 @@ def all_paper_rows(self):
 
         if not isinstance(objects, list):
             raise RuntimeError(
-                "Paper history listing unavailable"
+                "Paper journal listing unavailable"
             )
 
         names.extend(
@@ -84,7 +88,7 @@ def all_paper_rows(self):
 
         if offset >= 10000:
             raise RuntimeError(
-                "Paper history pagination limit reached"
+                "Paper journal pagination limit"
             )
 
     def load(key):
@@ -116,13 +120,12 @@ def all_paper_rows(self):
 
 
 # ============================================================
-# OFFICIAL AND ESTIMATED PAPER P&L
+# OFFICIAL PAPER PERFORMANCE
 # ============================================================
 
 def clearer_paper_metrics(rows):
     finals = [
-        r for r in rows
-        if r.get("final")
+        r for r in rows if r.get("final")
     ]
 
     pending = [
@@ -132,8 +135,7 @@ def clearer_paper_metrics(rows):
 
     open_rows = [
         r for r in rows
-        if not r.get("final")
-        and not r.get("exit")
+        if not r.get("final") and not r.get("exit")
     ]
 
     managed = sum(
@@ -180,27 +182,15 @@ def clearer_paper_metrics(rows):
     c.metric("Officially graded", len(finals))
 
     st.caption(
-        f"Estimated exit P&L pending settlement: "
+        f"Estimated pending exit P&L: "
         f"${estimated:+.2f}. "
         "Excluded from official totals. "
         "Paper estimates only."
     )
 
-    if finals:
-        wins = sum(
-            float(r["final"]["managed_pnl"]) > 0
-            for r in finals
-        )
-
-        st.caption(
-            f"Official managed wins: "
-            f"{wins}/{len(finals)} "
-            f"({wins / len(finals):.1%})"
-        )
-
 
 # ============================================================
-# QUOTE MAPPING
+# CORRECT ABOVE / BELOW QUOTE MAPPING
 # ============================================================
 
 def fix_mid_quote_mapping():
@@ -220,7 +210,7 @@ def fix_mid_quote_mapping():
     for before, after in replacements.items():
         if source.count(before) != 1:
             raise RuntimeError(
-                "MID quote compatibility check failed: "
+                "Quote mapping compatibility failed: "
                 + before
             )
 
@@ -233,7 +223,7 @@ def fix_mid_quote_mapping():
 
 
 # ============================================================
-# DIRECTION HELPERS
+# SIGNAL FIX V3 — NO HISTORICAL CALL FALLBACK
 # ============================================================
 
 def normalized_direction(value):
@@ -248,31 +238,16 @@ def normalized_direction(value):
     return None
 
 
-# ============================================================
-# SIGNAL FIX V3
-# HISTORICAL CALLS ARE NEVER LIVE SIGNALS
-# ============================================================
-
-SIGNAL_VERSION = "SIGNAL FIX V3"
-
-
 def queen_signal_state(
     market, errors, verified, reason, early
 ):
-    """
-    Current verified candidate display only.
-
-    Saved EARLY calls remain historical.
-    They cannot trigger a live BUY label.
-    """
-
     ticker = str(
         (market or {}).get("ticker") or ""
     )
 
     reason_text = str(reason or "").strip()
-    reason_upper = reason_text.upper()
     reason_lower = reason_text.lower()
+    reason_upper = reason_text.upper()
 
     if not ticker.startswith("KXBTC15M-"):
         return (
@@ -288,15 +263,11 @@ def queen_signal_state(
     if close is None:
         return (
             "DATA STALE",
-            "Kalshi settlement time unavailable",
+            "Settlement time unavailable",
             "#FF8295",
         )
 
-    remaining = (
-        close - base.now_utc()
-    ).total_seconds()
-
-    if remaining <= 0:
+    if (close - base.now_utc()).total_seconds() <= 0:
         return (
             "WAIT",
             "Contract closing or rolling over",
@@ -306,28 +277,27 @@ def queen_signal_state(
     if errors or not verified:
         return (
             "DATA STALE",
-            "Kalshi market verification unavailable",
+            "Kalshi verification unavailable",
             "#FF8295",
         )
 
+    stale_phrases = (
+        "stale",
+        "unavailable",
+        "needs refreshing",
+        "data issue",
+        "candle or quote",
+    )
+
     if any(
         phrase in reason_lower
-        for phrase in (
-            "stale",
-            "unavailable",
-            "needs refreshing",
-            "data issue",
-            "candle or quote",
-        )
+        for phrase in stale_phrases
     ):
         return (
             "DATA STALE",
             "Waiting for fresh market analysis",
             "#FF8295",
         )
-
-    # Only a fresh setup from the current analysis
-    # may appear as an EARLY directional candidate.
 
     if "setup detected" in reason_lower:
         above = "ABOVE" in reason_upper
@@ -336,18 +306,16 @@ def queen_signal_state(
         if above and not below:
             return (
                 "EARLY UP",
-                "Current bullish candidate · no V4 BUY",
+                "Current candidate · no V4 BUY",
                 "#53E7AB",
             )
 
         if below and not above:
             return (
                 "EARLY DOWN",
-                "Current bearish candidate · no V4 BUY",
+                "Current candidate · no V4 BUY",
                 "#FF8295",
             )
-
-    # No historical early.get("call") fallback.
 
     return (
         "WAIT",
@@ -357,7 +325,7 @@ def queen_signal_state(
 
 
 # ============================================================
-# REAL SAVED V4 PAPER EVENTS
+# REAL SAVED PAPER EVENTS
 # ============================================================
 
 def recorded_events(rows, ticker):
@@ -402,7 +370,7 @@ def recorded_events(rows, ticker):
         )
 
         if (
-            not exit_stamp
+            exit_stamp is None
             and reason != "Held to official settlement"
         ):
             exit_stamp = base.utc(
@@ -414,20 +382,16 @@ def recorded_events(rows, ticker):
             and reason
             and reason != "Held to official settlement"
         ):
-            is_profit = (
-                "profit review" in reason.lower()
-            )
+            profit = "profit review" in reason.lower()
 
             events.append({
                 "time": int(exit_stamp.timestamp()),
                 "ticker": ticker,
-                "kind": (
-                    "TP" if is_profit else "EXIT"
-                ),
+                "kind": "TP" if profit else "EXIT",
                 "side": side,
                 "text": (
                     "TP REVIEW"
-                    if is_profit
+                    if profit
                     else "EXIT REVIEW"
                 ),
             })
@@ -439,13 +403,12 @@ def recorded_events(rows, ticker):
 
 
 # ============================================================
-# COMPACT PAPER POSITION / P&L
+# COMPACT PAPER PERFORMANCE STRIP
 # ============================================================
 
 def paper_strip(rows, ticker):
     official = [
-        r for r in rows
-        if r.get("final")
+        r for r in rows if r.get("final")
     ]
 
     managed = sum(
@@ -465,15 +428,15 @@ def paper_strip(rows, ticker):
         if r.get("exit") and not r.get("final")
     ]
 
-    a, b, c = st.columns(3)
+    a, b, c = st.columns(3, gap="small")
 
     a.metric(
-        "V4 PAPER POSITION",
+        "PAPER POSITION",
         "OPEN" if open_rows else "NONE",
     )
 
     b.metric(
-        "OFFICIAL MANAGED P&L",
+        "OFFICIAL P&L",
         f"${managed:+.2f}",
     )
 
@@ -482,15 +445,95 @@ def paper_strip(rows, ticker):
         f"{len(official)} / {len(pending)}",
     )
 
-    st.caption(
-        "BUY / TP / EXIT chart markers represent "
-        "saved V4 paper events, not live orders."
-    )
+
+# ============================================================
+# TIGHTER STREAMLIT SPACING
+# ============================================================
+
+COMPACT_CSS = """
+<style>
+/* Tighten the native Streamlit layout. */
+.block-container{
+ padding-top:.65rem!important;
+ padding-bottom:1rem!important;
+}
+[data-testid="stVerticalBlock"]{
+ gap:.35rem!important;
+}
+[data-testid="stHorizontalBlock"]{
+ gap:.4rem!important;
+}
+[data-testid="stMarkdownContainer"] p{
+ margin-bottom:.15rem!important;
+}
+[data-testid="stMetric"]{
+ background:#1c102e;
+ border:1px solid #563678;
+ border-radius:10px;
+ padding:8px 10px;
+}
+[data-testid="stMetricLabel"]{
+ font-size:11px!important;
+}
+[data-testid="stMetricValue"]{
+ font-size:clamp(15px,2vw,23px)!important;
+}
+[data-testid="stExpander"]{
+ margin-top:2px!important;
+}
+.qgrid{
+ display:grid;
+ grid-template-columns:repeat(4,minmax(0,1fr));
+ gap:6px;
+ margin:0 0 6px;
+}
+.qcell{
+ background:#1c102e;
+ border:1px solid #563678;
+ border-radius:10px;
+ padding:8px 4px;
+ text-align:center;
+ min-width:0;
+}
+.qcell small{
+ display:block;
+ font-size:10px;
+ color:#bca5d6;
+ font-weight:700;
+}
+.qcell b{
+ display:block;
+ font-size:clamp(13px,2vw,20px);
+ margin-top:3px;
+ overflow-wrap:anywhere;
+}
+.qsignal{
+ background:#1c102e;
+ border:1px solid #78469c;
+ border-radius:12px;
+ padding:9px 8px;
+ text-align:center;
+ margin:2px 0 5px;
+}
+.qsignal b{
+ display:block;
+ font-size:clamp(21px,3vw,29px);
+ line-height:1.3;
+}
+.qsignal small{
+ color:#c9b5dc;
+}
+@media(max-width:550px){
+ .qgrid{
+  grid-template-columns:repeat(2,minmax(0,1fr));
+ }
+}
+</style>
+"""
 
 
 # ============================================================
-# COMPACT DASHBOARD
-# ORIGINAL BULL & BEAR BANNER REMAINS
+# COMPACT CURRENT SIGNAL PANEL
 # ============================================================
 
 def compact_header(
@@ -597,60 +640,8 @@ def compact_header(
         )
     )
 
-    css = """
-<style>
-.qgrid{
- display:grid;
- grid-template-columns:repeat(4,minmax(0,1fr));
- gap:7px;
- margin:6px 0;
-}
-.qcell{
- background:#1c102e;
- border:1px solid #563678;
- border-radius:10px;
- padding:9px 5px;
- text-align:center;
- min-width:0;
-}
-.qcell small{
- display:block;
- font-size:10px;
- color:#bca5d6;
- font-weight:700;
-}
-.qcell b{
- display:block;
- font-size:clamp(13px,2vw,20px);
- margin-top:5px;
- overflow-wrap:anywhere;
-}
-.qsignal{
- background:#1c102e;
- border:1px solid #78469c;
- border-radius:12px;
- padding:11px;
- text-align:center;
- margin:8px 0;
-}
-.qsignal b{
- display:block;
- font-size:clamp(22px,3vw,30px);
- line-height:1.3;
-}
-.qsignal small{
- color:#c9b5dc;
-}
-@media(max-width:550px){
- .qgrid{
-  grid-template-columns:repeat(2,minmax(0,1fr));
- }
-}
-</style>
-"""
-
     st.markdown(
-        css
+        COMPACT_CSS
         + '<div class="qgrid">'
         + tiles
         + '</div><div class="qsignal">'
@@ -665,11 +656,6 @@ def compact_header(
         unsafe_allow_html=True,
     )
 
-    # Version marker makes deployment verification easy.
-    st.caption(
-        "👑 QUEEN'S EDGE | 254 · " + SIGNAL_VERSION
-    )
-
     ticker = str(
         (market or {}).get("ticker") or ""
     )
@@ -679,6 +665,12 @@ def compact_header(
     )
 
     paper_strip(rows, ticker)
+
+    st.caption(
+        "👑 " + VERSION
+        + " · PAPER ONLY · "
+        "Coinbase and Kalshi verification are separate."
+    )
 
     with st.expander(
         "EARLY · MID · LOCK history",
@@ -693,18 +685,13 @@ def compact_header(
         )
 
         st.caption(
-            "EARLY calls are historical records. "
-            "They are not current BUY signals."
+            "Recorded EARLY calls are historical, "
+            "not current BUY signals."
         )
-
-    st.caption(
-        "Coinbase chart LIVE and Kalshi signal "
-        "verification are separate. PAPER ONLY."
-    )
 
 
 # ============================================================
-# CHART: RECORDED PAPER BUY / TP / EXIT
+# PRESERVE LIVE CHART + PAPER MARKERS
 # ============================================================
 
 original_compact_html = base.compact_chart_html
@@ -713,7 +700,6 @@ original_compact_html = base.compact_chart_html
 def compact_chart_html(html):
     html = original_compact_html(html)
 
-    # Hide duplicate chart summary.
     html = html.replace(
         '<div id="summary">',
         '<div id="summary" style="display:none">',
@@ -769,11 +755,9 @@ function qeRecordedMarkers(){
 
  for(const e of QE_PAPER_EVENTS){
   if(!e || typeof e.time!=='number')continue;
-
   if(e.ticker!==CONFIG.ticker)continue;
 
   const time=Math.floor(e.time/60)*60;
-
   if(!candleTimes.has(time))continue;
 
   const up=e.side==='UP';
@@ -825,7 +809,6 @@ function qeAllMarkers(){
         1,
     )
 
-    # Replace only the chart's original marker path.
     before, separator, after = html.partition(
         "function qeAllMarkers(){"
     )
@@ -834,19 +817,19 @@ function qeAllMarkers(){
         "function detectReversals("
     )
 
-    original_marker_path = "flags.markers?markers:[]"
+    marker_path = "flags.markers?markers:[]"
 
     if (
         not separator
         or not separator2
-        or remainder.count(original_marker_path) != 1
+        or remainder.count(marker_path) != 1
     ):
         raise RuntimeError(
-            "Chart compatibility: marker rendering changed"
+            "Chart compatibility: marker path changed"
         )
 
     remainder = remainder.replace(
-        original_marker_path,
+        marker_path,
         "qeAllMarkers()",
         1,
     )
@@ -886,6 +869,8 @@ html,body{
 }
 body{
  display:block!important;
+ margin:0!important;
+ padding:0!important;
 }
 #summary{
  display:none!important;
@@ -894,23 +879,25 @@ body{
  position:relative!important;
  top:auto!important;
  z-index:1!important;
+ margin-bottom:3px!important;
 }
 .mainPanel{
- height:365px!important;
- min-height:365px!important;
+ height:340px!important;
+ min-height:340px!important;
  flex:none!important;
+ margin-bottom:0!important;
 }
 #main{
- height:365px!important;
- min-height:365px!important;
+ height:340px!important;
+ min-height:340px!important;
 }
 #notice{
- margin:6px 0!important;
+ margin:4px 0!important;
 }
 @media(max-width:600px){
  .mainPanel,#main{
-  height:330px!important;
-  min-height:330px!important;
+  height:315px!important;
+  min-height:315px!important;
  }
 }
 </style>
@@ -924,7 +911,42 @@ body{
 
 
 # ============================================================
-# APPLY WRAPPER PATCHES
+# REDUCE EXCESS CHART IFRAME HEIGHT
+# ============================================================
+
+original_components_html = components.html
+
+
+def compact_components_html(
+    html, *args, **kwargs
+):
+    """
+    Only resize the Queen live candlestick iframe.
+    Other HTML components retain their normal size.
+    """
+
+    is_queen_chart = (
+        isinstance(html, str)
+        and "function detectReversals(" in html
+        and "QE_PAPER_EVENTS" in html
+    )
+
+    if is_queen_chart:
+        # The chart and toolbar need sufficient room.
+        # Keep the iframe much closer to its content.
+        kwargs["height"] = 490
+        kwargs["scrolling"] = False
+
+    return original_components_html(
+        html, *args, **kwargs
+    )
+
+
+components.html = compact_components_html
+
+
+# ============================================================
+# APPLY DISPLAY PATCHES
 # NO V4 STRATEGY CHANGES
 # ============================================================
 
@@ -946,7 +968,7 @@ base.compact_chart_html = compact_chart_html
 
 
 # ============================================================
-# START QUEEN'S EDGE
+# LAUNCH QUEEN'S EDGE
 # ============================================================
 
 if __name__ == "__main__":
