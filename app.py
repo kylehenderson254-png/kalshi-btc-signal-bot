@@ -1,21 +1,19 @@
 
 """QUEEN'S EDGE | 254
-Compact Bull & Bear Dashboard
+Compact Bull & Bear + V4 Paper Trade Chart Markers
 
 PAPER ONLY — NO REAL ORDERS.
 
-Required existing files:
-    queens_preview_base.py
-    queens_original.py
-    queens_live_chart.py
-    queens_v3_guard.py
-
-Preserves the V4 scanner, filters, saved paper history,
-and official-versus-estimated P&L tracking.
+Keep existing:
+queens_preview_base.py
+queens_original.py
+queens_live_chart.py
+queens_v3_guard.py
 """
 
 import importlib.util
 import inspect
+import json
 from concurrent.futures import ThreadPoolExecutor
 from html import escape
 from pathlib import Path
@@ -23,36 +21,25 @@ from pathlib import Path
 import streamlit as st
 
 
-# ============================================================
-# LOAD ORIGINAL QUEEN'S EDGE
-# ============================================================
-
 ROOT = Path(__file__).resolve().parent
 BASE = ROOT / "queens_preview_base.py"
 
 if not BASE.is_file():
-    st.error(
-        "Missing queens_preview_base.py. "
-        "Restore the original preview base file."
-    )
+    st.error("Missing queens_preview_base.py")
     st.stop()
 
 spec = importlib.util.spec_from_file_location(
-    "queens_preview_base",
-    BASE,
+    "queens_preview_base", BASE
 )
-
 base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
 
 
 # ============================================================
-# PRESERVE COMPLETE V4 PAPER HISTORY
+# COMPLETE V4 PAPER HISTORY
 # ============================================================
 
 def all_paper_rows(self):
-    """Read all saved V4 entries using pagination."""
-
     names = []
     offset = 0
     page_size = 200
@@ -74,7 +61,7 @@ def all_paper_rows(self):
 
         if not isinstance(objects, list):
             raise RuntimeError(
-                "Unexpected paper journal listing response"
+                "Paper history listing unavailable"
             )
 
         names.extend(
@@ -91,7 +78,7 @@ def all_paper_rows(self):
 
         if offset >= 10000:
             raise RuntimeError(
-                "Paper journal exceeds safe pagination limit"
+                "Paper history pagination safety limit"
             )
 
     def load(key):
@@ -99,7 +86,7 @@ def all_paper_rows(self):
 
         if not isinstance(entry, dict):
             raise RuntimeError(
-                "Stored paper entry could not be read: " + key
+                "Saved paper entry could not be read"
             )
 
         final = self.get("finals", key)
@@ -109,68 +96,60 @@ def all_paper_rows(self):
             "entry": entry,
             "final": final,
             "exit": (
-                None
-                if final
+                None if final
                 else self.get("exits", key)
             ),
         }
 
     with ThreadPoolExecutor(max_workers=6) as pool:
-        return list(pool.map(load, names))
+        rows = list(pool.map(load, names))
+
+    st.session_state["qe_paper_rows"] = rows
+    return rows
 
 
 # ============================================================
-# PRESERVE V4 PAPER P&L
+# ORIGINAL OFFICIAL / ESTIMATED PAPER P&L
 # ============================================================
 
 def clearer_paper_metrics(rows):
-    """Keep official results separate from estimates."""
+    finals = [r for r in rows if r.get("final")]
 
-    finals = [
-        row
-        for row in rows
-        if row.get("final")
-    ]
-
-    exited_pending = [
-        row
-        for row in rows
-        if not row.get("final")
-        and row.get("exit")
+    pending = [
+        r for r in rows
+        if r.get("exit") and not r.get("final")
     ]
 
     open_rows = [
-        row
-        for row in rows
-        if not row.get("final")
-        and not row.get("exit")
+        r for r in rows
+        if not r.get("final") and not r.get("exit")
     ]
 
     managed = sum(
-        float(row["final"]["managed_pnl"])
-        for row in finals
+        float(r["final"]["managed_pnl"])
+        for r in finals
     )
 
-    settlement = sum(
-        float(row["final"]["hold_pnl"])
-        for row in finals
+    hold = sum(
+        float(r["final"]["hold_pnl"])
+        for r in finals
     )
 
-    pending_exit = sum(
-        float(row["exit"]["pnl"])
-        for row in exited_pending
+    estimated = sum(
+        float(r["exit"]["pnl"])
+        for r in pending
     )
 
     a, b = st.columns(2)
 
     a.metric(
-        "Matched managed P&L · official",
+        "Official managed P&L",
         f"${managed:+.2f}",
     )
 
     b.metric(
-        "Matched settlement P&L · official",
-        f"${settlement:+.2f}",
+        "Official hold P&L",
+        f"${hold:+.2f}",
     )
 
     a.metric(
@@ -185,71 +164,48 @@ def clearer_paper_metrics(rows):
 
     a, b, c = st.columns(3)
 
-    a.metric(
-        "Open positions",
-        len(open_rows),
-    )
-
-    b.metric(
-        "Exited · awaiting settlement",
-        len(exited_pending),
-    )
-
-    c.metric(
-        "Officially graded",
-        len(finals),
-    )
-
-    st.metric(
-        "Estimated exited P&L · pending official result",
-        f"${pending_exit:+.2f}",
-    )
+    a.metric("Open", len(open_rows))
+    b.metric("Exit pending", len(pending))
+    c.metric("Officially graded", len(finals))
 
     st.caption(
-        "Pending exit P&L uses estimated fills and fees. "
-        "It is not included in officially matched totals. "
-        "No real orders are placed."
+        f"Estimated exit P&L pending settlement: "
+        f"${estimated:+.2f}. Not included in "
+        "official totals. Paper estimates only."
     )
 
     if finals:
         wins = sum(
-            float(row["final"]["managed_pnl"]) > 0
-            for row in finals
+            float(r["final"]["managed_pnl"]) > 0
+            for r in finals
         )
 
         st.caption(
-            f"Officially matched managed wins: "
+            f"Official managed wins: "
             f"{wins}/{len(finals)} "
-            f"({wins / len(finals):.1%}). "
-            "Paper estimates only."
+            f"({wins / len(finals):.1%})"
         )
 
 
 # ============================================================
-# PRESERVE CORRECT KALSHI QUOTE MAPPING
+# PRESERVE CORRECT ABOVE / BELOW QUOTES
 # ============================================================
 
 def fix_mid_quote_mapping():
-    """Correct ABOVE/BELOW mapping without editing base."""
-
     source = inspect.getsource(base.qe_stage_row)
 
     replacements = {
         "quote(market, 'yes', 'bid')":
             "quote(market, 'ABOVE', 'bid')",
-
         "quote(market, 'yes', 'ask')":
             "quote(market, 'ABOVE', 'ask')",
-
         "quote(market, 'no', 'bid')":
             "quote(market, 'BELOW', 'bid')",
-
         "quote(market, 'no', 'ask')":
             "quote(market, 'BELOW', 'ask')",
     }
 
     for before, after in replacements.items():
-
         if source.count(before) != 1:
             raise RuntimeError(
                 "MID quote compatibility check failed: "
@@ -265,30 +221,24 @@ def fix_mid_quote_mapping():
 
 
 # ============================================================
-# SIGNAL INTERPRETATION — DISPLAY ONLY
+# CONSERVATIVE SIGNAL DISPLAY
 # ============================================================
 
 def normalized_direction(value):
     value = str(value or "").strip().upper()
 
-    if value in ("ABOVE", "UP", "YES"):
+    if value in ("UP", "ABOVE", "YES"):
         return "UP"
 
-    if value in ("BELOW", "DOWN", "NO"):
+    if value in ("DOWN", "BELOW", "NO"):
         return "DOWN"
 
     return None
 
 
 def queen_signal_state(
-    market,
-    errors,
-    verified,
-    reason,
-    early,
+    market, errors, verified, reason, early
 ):
-    """Never interpret EARLY as a confirmed V4 entry."""
-
     ticker = str(
         (market or {}).get("ticker") or ""
     )
@@ -299,7 +249,7 @@ def queen_signal_state(
     if not ticker.startswith("KXBTC15M-"):
         return (
             "WAIT",
-            "Waiting for the next BTC market",
+            "Waiting for BTC contract",
             "#F5C96B",
         )
 
@@ -310,92 +260,216 @@ def queen_signal_state(
     if close is None:
         return (
             "DATA STALE",
-            "Market settlement time unavailable",
+            "Settlement time unavailable",
             "#FF8295",
         )
 
-    seconds = (
-        close - base.now_utc()
-    ).total_seconds()
-
-    if seconds <= 0:
+    if (close - base.now_utc()).total_seconds() <= 0:
         return (
             "WAIT",
-            "Market closing or changing rounds",
+            "Contract closing or rolling over",
             "#F5C96B",
         )
 
     if errors or not verified:
         return (
             "DATA STALE",
-            "Market quote verification unavailable",
+            "Kalshi quote verification unavailable",
             "#FF8295",
         )
 
-    stale_phrases = (
-        "needs refreshing",
-        "unavailable",
-        "stale",
-        "data issue",
-        "candle or quote",
-    )
-
     if any(
         phrase in reason_lower
-        for phrase in stale_phrases
+        for phrase in (
+            "stale",
+            "unavailable",
+            "needs refreshing",
+            "data issue",
+            "candle or quote",
+        )
     ):
         return (
             "DATA STALE",
-            "Waiting for fresh Kalshi market data",
+            "Waiting for fresh Kalshi data",
             "#FF8295",
         )
 
     if "setup detected" in reason_lower:
-
         if "ABOVE" in reason_text.upper():
             return (
                 "EARLY UP",
-                "Bullish candidate · V4 entry not confirmed",
+                "Candidate · V4 entry not confirmed",
                 "#53E7AB",
             )
 
         if "BELOW" in reason_text.upper():
             return (
                 "EARLY DOWN",
-                "Bearish candidate · V4 entry not confirmed",
+                "Candidate · V4 entry not confirmed",
                 "#FF8295",
             )
 
-    early_side = normalized_direction(
+    recorded = normalized_direction(
         early.get("call")
         if isinstance(early, dict)
         else None
     )
 
-    if early_side == "UP":
+    if recorded:
         return (
-            "EARLY UP",
-            "Recorded bullish call · not a new BUY",
-            "#53E7AB",
-        )
-
-    if early_side == "DOWN":
-        return (
-            "EARLY DOWN",
-            "Recorded bearish call · not a new BUY",
-            "#FF8295",
+            "EARLY " + recorded,
+            "Recorded call · not a new BUY",
+            (
+                "#53E7AB"
+                if recorded == "UP"
+                else "#FF8295"
+            ),
         )
 
     return (
         "WAIT",
-        reason_text or "No qualifying setup yet",
+        reason_text or "No qualifying setup",
         "#F5C96B",
     )
 
 
 # ============================================================
-# COMPACT HEADER
-# NO SECOND BANNER
+# REAL V4 PAPER EVENTS
+# ============================================================
+
+def recorded_events(rows, ticker):
+    """Only actual saved paper entries and exits."""
+
+    events = []
+
+    for row in rows:
+        entry = row.get("entry") or {}
+
+        if entry.get("ticker") != ticker:
+            continue
+
+        side = normalized_direction(
+            entry.get("side")
+        )
+
+        stamp = base.utc(
+            entry.get("observed_at")
+        )
+
+        if not side or stamp is None:
+            continue
+
+        events.append({
+            "time": int(stamp.timestamp()),
+            "ticker": ticker,
+            "kind": "BUY",
+            "side": side,
+            "text": "PAPER BUY " + side,
+        })
+
+        exit_record = row.get("exit") or {}
+        final = row.get("final") or {}
+
+        reason = str(
+            exit_record.get("reason")
+            or final.get("exit_reason")
+            or ""
+        )
+
+        exit_stamp = base.utc(
+            exit_record.get("observed_at")
+        )
+
+        if (
+            not exit_stamp
+            and reason != "Held to official settlement"
+        ):
+            exit_stamp = base.utc(
+                final.get("managed_closed_at")
+            )
+
+        if (
+            exit_stamp
+            and reason
+            and reason != "Held to official settlement"
+        ):
+            is_profit = (
+                "profit review" in reason.lower()
+            )
+
+            events.append({
+                "time": int(exit_stamp.timestamp()),
+                "ticker": ticker,
+                "kind": (
+                    "TP" if is_profit else "EXIT"
+                ),
+                "side": side,
+                "text": (
+                    "TP REVIEW"
+                    if is_profit
+                    else "EXIT REVIEW"
+                ),
+            })
+
+    return sorted(
+        events,
+        key=lambda e: e["time"],
+    )[-80:]
+
+
+# ============================================================
+# COMPACT PAPER P&L STRIP
+# ============================================================
+
+def paper_strip(rows, ticker):
+    official = [
+        r for r in rows if r.get("final")
+    ]
+
+    managed = sum(
+        float(r["final"]["managed_pnl"])
+        for r in official
+    )
+
+    open_rows = [
+        r for r in rows
+        if not r.get("final")
+        and not r.get("exit")
+        and (r.get("entry") or {}).get("ticker") == ticker
+    ]
+
+    pending = [
+        r for r in rows
+        if r.get("exit") and not r.get("final")
+    ]
+
+    a, b, c = st.columns(3)
+
+    a.metric(
+        "V4 PAPER POSITION",
+        "OPEN" if open_rows else "NONE",
+    )
+
+    b.metric(
+        "OFFICIAL MANAGED P&L",
+        f"${managed:+.2f}",
+    )
+
+    c.metric(
+        "SETTLED / PENDING",
+        f"{len(official)} / {len(pending)}",
+    )
+
+    st.caption(
+        "Chart markers use saved V4 paper events. "
+        "TP reviews use estimated fills, "
+        "not guaranteed execution."
+    )
+
+
+# ============================================================
+# SINGLE COMPACT SIGNAL PANEL
+# ORIGINAL BULL / BEAR BANNER IS UNTOUCHED
 # ============================================================
 
 def compact_header(
@@ -407,7 +481,7 @@ def compact_header(
     early=None,
     locked=None,
 ):
-    direction, old_signal, reason, fresh = (
+    direction, _, reason, fresh = (
         base.qe_simple_status(
             market,
             errors,
@@ -456,24 +530,22 @@ def compact_header(
         (market or {}).get("floor_strike")
     )
 
-    def price(p):
+    def price(value):
         return (
-            f"{p * 100:.1f}¢"
-            if p is not None
+            f"{value * 100:.1f}¢"
+            if value is not None
             else "—"
         )
 
     def cell(title, value, tone="#e8d6ff"):
         return (
-            '<div class="qcell">'
-            '<small>'
+            '<div class="qcell"><small>'
             + escape(str(title))
-            + '</small>'
-            '<b style="color:'
+            + '</small><b style="color:'
             + tone
             + '">'
             + escape(str(value))
-            + '</b></div>'
+            + "</b></div>"
         )
 
     tiles = (
@@ -504,7 +576,7 @@ def compact_header(
         )
     )
 
-    style = """
+    css = """
 <style>
 .qgrid{
  display:grid;
@@ -556,29 +628,32 @@ def compact_header(
 </style>
 """
 
-    html = (
-        style
+    st.markdown(
+        css
         + '<div class="qgrid">'
         + tiles
-        + '</div>'
-        '<div class="qsignal">'
+        + '</div><div class="qsignal">'
         '<small>👑 CURRENT KALSHI SIGNAL</small>'
         '<b style="color:'
         + color
         + '">'
         + escape(signal)
-        + '</b>'
-        '<small>'
+        + '</b><small>'
         + escape(explanation)
-        + '</small></div>'
-    )
-
-    st.markdown(
-        html,
+        + '</small></div>',
         unsafe_allow_html=True,
     )
 
-    # Preserve records, but hide the extra row by default.
+    ticker = str(
+        (market or {}).get("ticker") or ""
+    )
+
+    rows = st.session_state.get(
+        "qe_paper_rows", []
+    )
+
+    paper_strip(rows, ticker)
+
     with st.expander(
         "EARLY · MID · LOCK details",
         expanded=False,
@@ -592,32 +667,201 @@ def compact_header(
         )
 
         st.caption(
-            "EARLY recorded calls are not V4 BUY entries. "
-            "Settlement LOCK is tracked separately."
+            "EARLY calls are not V4 BUY entries. "
+            "LOCK is separate."
         )
 
     st.caption(
-        "Coinbase chart LIVE does not mean Kalshi "
-        "quotes are verified. PAPER ONLY."
+        "Coinbase LIVE does not mean Kalshi verified. "
+        "PAPER ONLY."
     )
 
 
 # ============================================================
-# COMPACT LIVE CHART
+# LIVE CHART + RECORDED BUY / TP / EXIT MARKERS
 # ============================================================
 
 original_compact_html = base.compact_chart_html
 
 
 def compact_chart_html(html):
-    """Remove duplicate summary and fix iframe layout."""
-
     html = original_compact_html(html)
 
-    # The outer dashboard already provides the summary.
+    # Keep the original bull/bear banner.
+    # Hide only the duplicate chart summary.
+
     html = html.replace(
         '<div id="summary">',
         '<div id="summary" style="display:none">',
+        1,
+    )
+
+    rows = st.session_state.get(
+        "qe_paper_rows", []
+    )
+
+    events = []
+
+    for row in rows:
+        ticker = str(
+            (row.get("entry") or {}).get("ticker")
+            or ""
+        )
+
+        events.extend(
+            recorded_events([row], ticker)
+        )
+
+    payload = json.dumps(
+        events,
+        separators=(",", ":"),
+    ).replace("<", "\\u003c")
+
+    anchor = "let bars=[];"
+
+    if html.count(anchor) != 1:
+        raise RuntimeError(
+            "Chart marker compatibility: "
+            "candle array missing"
+        )
+
+    html = html.replace(
+        anchor,
+        "const QE_PAPER_EVENTS="
+        + payload
+        + ";\n"
+        + anchor,
+        1,
+    )
+
+    marker_js = r"""
+function qeRecordedMarkers(){
+ if(!CONFIG.ticker || !bars.length)return [];
+
+ const candleTimes=new Set(
+  bars.map(b=>b.time)
+ );
+
+ const result=[];
+
+ for(const e of QE_PAPER_EVENTS){
+  if(!e || typeof e.time!=='number')continue;
+
+  // Never show another contract's entries.
+  if(e.ticker!==CONFIG.ticker)continue;
+
+  const time=Math.floor(e.time/60)*60;
+
+  if(!candleTimes.has(time))continue;
+
+  const up=e.side==='UP';
+  const buy=e.kind==='BUY';
+
+  result.push({
+   time:time,
+   position:buy
+    ?(up?'belowBar':'aboveBar')
+    :'aboveBar',
+   shape:buy
+    ?(up?'arrowUp':'arrowDown')
+    :'circle',
+   color:buy
+    ?(up?'#51f0aa':'#ff7896')
+    :(e.kind==='TP'
+      ?'#ffe16b'
+      :'#d6a5ff'),
+   text:e.text
+  });
+ }
+
+ return result.sort(
+  (a,b)=>a.time-b.time
+ );
+}
+
+function qeAllMarkers(){
+ return [
+  ...qeRecordedMarkers(),
+  ...(flags.markers?markers:[])
+ ].sort((a,b)=>a.time-b.time);
+}
+"""
+
+    anchor = (
+        "function detectReversals("
+        "close,e9,e21,rv,mc){"
+    )
+
+    if html.count(anchor) != 1:
+        raise RuntimeError(
+            "Chart marker compatibility: "
+            "reversal function missing"
+        )
+
+    html = html.replace(
+        anchor,
+        marker_js + "\n" + anchor,
+        1,
+    )
+
+    old = "flags.markers?markers:[]"
+
+    if html.count(old) != 3:
+        raise RuntimeError(
+            "Chart marker compatibility: "
+            "unexpected marker paths"
+        )
+
+    before, sep, after = html.partition(
+        "function qeAllMarkers(){"
+    )
+
+    helper, sep2, remainder = after.partition(
+        "function detectReversals("
+    )
+
+    if (
+        before.count(old) != 1
+        or remainder.count(old) != 1
+    ):
+        raise RuntimeError(
+            "Chart marker compatibility: "
+            "marker paths changed"
+        )
+
+    before = before.replace(
+        old,
+        "qeAllMarkers()",
+    )
+
+    remainder = remainder.replace(
+        old,
+        "qeAllMarkers()",
+    )
+
+    html = (
+        before + sep + helper
+        + sep2 + remainder
+    )
+
+    # Preserve saved historical events even
+    # when the Coinbase feed becomes stale.
+
+    html = html.replace(
+        "series.candles?.setMarkers([]);",
+        "series.candles?.setMarkers("
+        "qeRecordedMarkers());",
+    )
+
+    html = html.replace(
+        "<span>🟡 Target snapshot</span>",
+        '<span>🟡 Target snapshot</span>'
+        '<span style="color:#51f0aa">'
+        '● PAPER BUY</span>'
+        '<span style="color:#ffe16b">'
+        '● TP REVIEW</span>'
+        '<span style="color:#d6a5ff">'
+        '● EXIT REVIEW</span>',
         1,
     )
 
@@ -640,13 +884,13 @@ body{
  z-index:1!important;
 }
 .mainPanel{
- height:350px!important;
- min-height:350px!important;
+ height:365px!important;
+ min-height:365px!important;
  flex:none!important;
 }
 #main{
- height:350px!important;
- min-height:350px!important;
+ height:365px!important;
+ min-height:365px!important;
 }
 #notice{
  margin:6px 0!important;
@@ -656,8 +900,8 @@ body{
 }
 @media(max-width:600px){
  .mainPanel,#main{
-  height:300px!important;
-  min-height:300px!important;
+  height:330px!important;
+  min-height:330px!important;
  }
 }
 </style>
@@ -673,35 +917,84 @@ body{
 
 
 # ============================================================
-# APPLY DISPLAY PATCHES
-# V4 SCANNER AND STRATEGY REMAIN UNCHANGED
+# REDUCE EXCESS CHART IFRAME HEIGHT
+# IN MEMORY ONLY — NO OTHER FILES MODIFIED
+# ============================================================
+
+renderer_source = inspect.getsource(
+    base.clean_chart_renderer
+)
+
+if (
+    renderer_source.count(
+        "ast.Constant(value=620)"
+    ) != 1
+    or renderer_source.count(
+        "self.generic_visit(node)"
+    ) != 1
+):
+    st.error(
+        "Chart height compatibility check failed. "
+        "Keep the previous working app.py."
+    )
+    st.stop()
+
+renderer_source = renderer_source.replace(
+    "ast.Constant(value=620)",
+    "ast.Constant(value=530)",
+)
+
+renderer_source = renderer_source.replace(
+    "self.generic_visit(node)",
+    """self.generic_visit(node)
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id == 'max'
+                and len(node.args) == 2
+                and isinstance(
+                    node.args[0], ast.Constant
+                )
+                and node.args[0].value == 680
+            ):
+                node.args[0] = ast.Constant(
+                    value=530
+                )""",
+)
+
+exec(
+    compile(
+        renderer_source,
+        str(BASE),
+        "exec",
+    ),
+    base.__dict__,
+)
+
+
+# ============================================================
+# APPLY DISPLAY-ONLY PATCHES
+# KEEP ORIGINAL V4 STRATEGY
 # ============================================================
 
 base.PaperJournal.rows = all_paper_rows
-
 base.paper_metrics = clearer_paper_metrics
 
 try:
     fix_mid_quote_mapping()
 
 except (OSError, TypeError, RuntimeError) as exc:
-
     st.error(
-        "Quote compatibility check failed. "
-        "Original trading logic was not changed: "
+        "Quote compatibility check failed: "
         + str(exc)
     )
-
     st.stop()
 
-
 base.qe_simple_header = compact_header
-
 base.compact_chart_html = compact_chart_html
 
 
 # ============================================================
-# LAUNCH QUEEN'S EDGE
+# LAUNCH — PAPER ONLY
 # ============================================================
 
 if __name__ == "__main__":
