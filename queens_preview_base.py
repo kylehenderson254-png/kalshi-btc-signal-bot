@@ -730,46 +730,23 @@ def daily_pnl(rows):
 
 
 def paper_metrics(rows):
-    finals = [row for row in rows if row['final']]
-    cols = st.columns(2)
-
-    managed = sum(
-        row['final']['managed_pnl']
-        for row in finals
-    )
-    settlement = sum(
-        row['final']['hold_pnl']
-        for row in finals
-    )
-
-    cols[0].metric(
-        'Matched managed P&L',
-        f'${managed:+.2f}',
-    )
-    cols[1].metric(
-        'Matched settlement P&L',
-        f'${settlement:+.2f}',
-    )
-    cols[0].metric(
-        'Paper entries / official outcomes',
-        f'{len(rows)} / {len(finals)}',
-    )
-    cols[1].metric(
-        'Today · managed realized',
-        f'${daily_pnl(rows):+.2f}',
-    )
-
-    if finals:
-        wins = sum(
-            row['final']['managed_pnl'] > 0
-            for row in finals
-        )
-        st.caption(
-            f'Paper win rate (officially matched): '
-            f'{wins}/{len(finals)} = '
-            f'{wins / len(finals):.1%}. '
-            'Estimated fills; not live results.'
-        )
+    """Compact, historical V4 paper results; never mix in shadow studies."""
+    finals = [row for row in rows if row.get('final')]
+    managed = sum(float(row['final'].get('managed_pnl') or 0) for row in finals)
+    settlement = sum(float(row['final'].get('hold_pnl') or 0) for row in finals)
+    wins = sum(float(row['final'].get('managed_pnl') or 0) > 0 for row in finals)
+    pending = len(rows) - len(finals)
+    st.markdown('##### 👑 V4 PAPER RESULTS')
+    a, b, c, d = st.columns(4)
+    a.metric('Managed net P&L', f'${managed:+.2f}')
+    b.metric('Win rate', f'{wins / len(finals):.1%}' if finals else '—')
+    c.metric('Graded / pending', f'{len(finals)} / {pending}')
+    d.metric('Today net', f'${daily_pnl(rows):+.2f}')
+    with st.expander('V4 result details · settlement comparison', expanded=False):
+        x, y = st.columns(2)
+        x.metric('Hold-to-settlement P&L', f'${settlement:+.2f}')
+        y.metric('Total recorded entries', len(rows))
+        st.caption('Only V4 entries included. Shadow and near-miss observations are separate. Estimated paper fills and fees, not real trades.')
 
 
 def guidance_panel(market, verified, quote_fn, candle_fn, rows):
@@ -859,16 +836,23 @@ def guidance_panel(market, verified, quote_fn, candle_fn, rows):
                     f"${estimate['pnl']:+.2f}",
                 )
 
-                if reason:
-                    st.error(
+                if estimate['pnl'] > 0:
+                    st.success(
+                        'TAKE PROFIT AVAILABLE · estimated positive net '
+                        'at the observed bid after modeled exit costs. '
+                        'Review limit sell; a fill is not guaranteed. '
+                        + f"Estimated exit {estimate['price'] * 100:.0f}¢"
+                    )
+                elif reason:
+                    st.warning(
                         'EXIT REVIEW · ' + reason
                         + ' · estimated exit '
                         + f"{estimate['price'] * 100:.0f}¢"
                     )
                 else:
                     st.info(
-                        'HOLD / MONITOR · No experimental exit trigger yet. '
-                        'A sudden reversal can occur before the next scan.'
+                        'HOLD / MONITOR · No positive net exit available '
+                        'at the observed bid. Prices can change quickly.'
                     )
 
         elif status == 'CANDIDATE' and side in ('ABOVE', 'BELOW'):
@@ -1941,7 +1925,7 @@ def _run_paper_engine(
             st.caption('Shadow Tracker reporting unavailable; V4 scanner unchanged.')
 
     st.caption(
-        'Actual paper strategy holds until official settlement. '
+        'V4 paper results currently use the existing settlement/managed-exit model. '
         'Shadow take-profit observations at 70/75/80¢ use observed bids '
         'and displayed depth, with estimated slippage and fees; they are '
         'not guaranteed fills. Shadow tracking runs only while this '
@@ -2570,7 +2554,6 @@ def launch():
 
 if __name__ == '__main__':
     launch()
-
 
 
 
