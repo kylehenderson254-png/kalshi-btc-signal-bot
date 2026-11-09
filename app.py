@@ -1,17 +1,13 @@
 
 """QUEEN'S EDGE | 254
-Compact Dashboard V4 — Layout Tightening
+COMPACT V4 + SIGNAL FIX V3 + CANDLE RECOVERY
 
-PAPER ONLY. NO REAL ORDERS.
+PAPER ONLY — NO REAL ORDERS
 
-Preserves:
-- Original bull and bear branding
-- Existing V4 scanner and entry filters
-- Historical EARLY signal protection
-- Saved paper BUY / TP / EXIT markers
-- Official and estimated paper P&L
-
-Only app.py should be replaced.
+Requires:
+    queens_preview_base.py
+    queens_live_chart.py
+    queens_feed_patch.py
 """
 
 import importlib.util
@@ -26,7 +22,7 @@ import streamlit.components.v1 as components
 
 
 # ============================================================
-# LOAD ORIGINAL QUEEN'S EDGE
+# LOAD ORIGINAL DASHBOARD
 # ============================================================
 
 ROOT = Path(__file__).resolve().parent
@@ -42,11 +38,11 @@ spec = importlib.util.spec_from_file_location(
 base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
 
-VERSION = "COMPACT V4 · SIGNAL FIX V3"
+VERSION = "COMPACT V4 · SIGNAL FIX V3 · FEED RECOVERY"
 
 
 # ============================================================
-# COMPLETE V4 PAPER JOURNAL
+# PAPER JOURNAL
 # ============================================================
 
 def all_paper_rows(self):
@@ -190,7 +186,7 @@ def clearer_paper_metrics(rows):
 
 
 # ============================================================
-# CORRECT ABOVE / BELOW QUOTE MAPPING
+# ABOVE / BELOW QUOTE MAPPING
 # ============================================================
 
 def fix_mid_quote_mapping():
@@ -223,7 +219,8 @@ def fix_mid_quote_mapping():
 
 
 # ============================================================
-# SIGNAL FIX V3 — NO HISTORICAL CALL FALLBACK
+# SIGNAL FIX V3
+# HISTORICAL EARLY CALLS ARE NOT NEW BUY SIGNALS
 # ============================================================
 
 def normalized_direction(value):
@@ -325,7 +322,7 @@ def queen_signal_state(
 
 
 # ============================================================
-# REAL SAVED PAPER EVENTS
+# SAVED PAPER BUY / TP / EXIT EVENTS
 # ============================================================
 
 def recorded_events(rows, ticker):
@@ -403,7 +400,7 @@ def recorded_events(rows, ticker):
 
 
 # ============================================================
-# COMPACT PAPER PERFORMANCE STRIP
+# COMPACT PAPER PERFORMANCE
 # ============================================================
 
 def paper_strip(rows, ticker):
@@ -447,12 +444,11 @@ def paper_strip(rows, ticker):
 
 
 # ============================================================
-# TIGHTER STREAMLIT SPACING
+# COMPACT DASHBOARD STYLING
 # ============================================================
 
 COMPACT_CSS = """
 <style>
-/* Tighten the native Streamlit layout. */
 .block-container{
  padding-top:.65rem!important;
  padding-bottom:1rem!important;
@@ -533,7 +529,7 @@ COMPACT_CSS = """
 
 
 # ============================================================
-# COMPACT CURRENT SIGNAL PANEL
+# CURRENT KALSHI SIGNAL
 # ============================================================
 
 def compact_header(
@@ -691,7 +687,7 @@ def compact_header(
 
 
 # ============================================================
-# PRESERVE LIVE CHART + PAPER MARKERS
+# LIVE CHART + SAVED PAPER MARKERS
 # ============================================================
 
 original_compact_html = base.compact_chart_html
@@ -911,7 +907,7 @@ body{
 
 
 # ============================================================
-# REDUCE EXCESS CHART IFRAME HEIGHT
+# COMPACT CHART HEIGHT
 # ============================================================
 
 original_components_html = components.html
@@ -920,11 +916,6 @@ original_components_html = components.html
 def compact_components_html(
     html, *args, **kwargs
 ):
-    """
-    Only resize the Queen live candlestick iframe.
-    Other HTML components retain their normal size.
-    """
-
     is_queen_chart = (
         isinstance(html, str)
         and "function detectReversals(" in html
@@ -932,8 +923,6 @@ def compact_components_html(
     )
 
     if is_queen_chart:
-        # The chart and toolbar need sufficient room.
-        # Keep the iframe much closer to its content.
         kwargs["height"] = 490
         kwargs["scrolling"] = False
 
@@ -946,8 +935,7 @@ components.html = compact_components_html
 
 
 # ============================================================
-# APPLY DISPLAY PATCHES
-# NO V4 STRATEGY CHANGES
+# APPLY EXISTING DASHBOARD PATCHES
 # ============================================================
 
 base.PaperJournal.rows = all_paper_rows
@@ -965,6 +953,31 @@ except (OSError, TypeError, RuntimeError) as exc:
 
 base.qe_simple_header = compact_header
 base.compact_chart_html = compact_chart_html
+
+
+# ============================================================
+# NEW — CONNECT COINBASE CANDLE RECOVERY
+# ============================================================
+
+try:
+    import queens_feed_patch
+
+    queens_feed_patch.install(base)
+
+except ImportError as exc:
+    st.error(
+        "Queen's candle recovery file could not be "
+        "loaded. Check queens_feed_patch.py. "
+        + str(exc)
+    )
+    st.stop()
+
+except Exception as exc:
+    st.error(
+        "Queen's candle recovery could not be "
+        "installed: " + str(exc)
+    )
+    st.stop()
 
 
 # ============================================================
