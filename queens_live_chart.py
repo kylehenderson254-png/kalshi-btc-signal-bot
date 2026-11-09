@@ -1694,7 +1694,7 @@ function start(){
    lineWidth:2,
    lineStyle:2,
    axisLabelVisible:true,
-   title:'KALSHI TARGET · snapshot'
+   title:''
   });
  }
 
