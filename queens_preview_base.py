@@ -2203,11 +2203,34 @@ def qe_simple_header(market, errors, quote_fn, candle_fn, verified, early=None, 
     close = utc((market or {}).get('close_time'))
     now = now_utc()
     remaining = max(0, int((close - now).total_seconds())) if close else None
-    now_ct = now.astimezone(CT).strftime('%I:%M:%S %p').lstrip('0')
-    left, right = st.columns(2)
-    left.metric('🕒 CENTRAL TIME', now_ct)
-    right.metric('⏳ SETTLEMENT IN',
-                 f'{remaining//60:02d}:{remaining%60:02d}' if remaining is not None else '—')
+    # Client-side clock: no Streamlit rerun, no chart remount or dimming.
+    # The contract close timestamp is a snapshot; new contracts update on
+    # the next normal dashboard execution, not via this browser timer.
+    import streamlit.components.v1 as components
+    close_ms = int(close.timestamp() * 1000) if close else None
+    clock_html = """<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box}html,body{margin:0;background:transparent;color:#ead7fa;font-family:system-ui,-apple-system,sans-serif}
+.wrap{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:2px 1px 4px}
+.card{background:linear-gradient(110deg,#1b1030,#211331);border:1px solid #583677;border-radius:15px;padding:16px 14px;min-height:100px}
+.label{font-size:14px;opacity:.85;white-space:nowrap}.value{font-size:clamp(23px,4vw,32px);font-weight:800;margin-top:10px;letter-spacing:.2px;font-variant-numeric:tabular-nums}
+@media(max-width:400px){.wrap{gap:7px}.card{padding:12px 9px;min-height:92px}.label{font-size:11px}.value{font-size:21px}}
+</style></head><body>
+<div class="wrap"><div class="card"><div class="label">🕒 CENTRAL TIME</div><div class="value" id="ct">--:--:--</div></div>
+<div class="card"><div class="label">⏳ SETTLEMENT IN</div><div class="value" id="settle">--:--</div></div></div>
+<script>
+const closeMs=__CLOSE_MS__;
+const fmt=new Intl.DateTimeFormat('en-US',{timeZone:'America/Chicago',hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true});
+function tick(){
+ const now=Date.now();document.getElementById('ct').textContent=fmt.format(new Date(now));
+ const el=document.getElementById('settle');
+ if(closeMs===null){el.textContent='—';return;}
+ const secs=Math.max(0,Math.ceil((closeMs-now)/1000));
+ el.textContent=String(Math.floor(secs/60)).padStart(2,'0')+':'+String(secs%60).padStart(2,'0');
+}
+tick();setInterval(tick,200);
+</script></body></html>""".replace('__CLOSE_MS__', json.dumps(close_ms))
+    components.html(clock_html, height=116, scrolling=False)
     direction, signal, reason, fresh = qe_simple_status(market, errors, quote_fn, candle_fn, verified)
     a, b = st.columns(2)
     a.metric('📉 MARKET DIRECTION', direction)
@@ -2371,7 +2394,6 @@ def launch():
 
 if __name__ == '__main__':
     launch()
-
 
 
 
