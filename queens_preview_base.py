@@ -1443,6 +1443,8 @@ def shadow_v1_report(store):
                 'Observed CT': observed.astimezone(CT).strftime('%m/%d %H:%M:%S') if observed else '—',
                 'Ticker': event.get('ticker'), 'Side': event.get('side'),
                 'Ask ¢': round(float(event.get('ask') or 0) * 100, 1),
+                'Contracts': int(event.get('qty') or 0),
+                'Modeled risk $': round(float(event.get('risk') or 0), 2),
                 'Why V4 skipped': '; '.join(map(str, event.get('reasons') or [])),
                 'Official grade': ('WIN' if final.get('win') else 'LOSS') if final else 'PENDING',
                 'Hypothetical net $': final.get('hypothetical_pnl') if final else None,
@@ -1454,16 +1456,13 @@ def shadow_v1_report(store):
         wins = sum(row['Official grade'] == 'WIN' for row in graded)
         losses = len(graded) - wins
         total_net = sum(float(row['Hypothetical net $'] or 0) for row in graded)
-        # Each saved observation uses its own fee-inclusive risk, capped at $5.
-        # Show the actual modeled stake, not a fictitious flat $5 bet.
-        total_risk = 0.0
-        for item in items:
-            key = str(item.get('name') or '')
-            if not key.endswith('.json'):
-                continue
-            event = store.get('shadow_v1_rejections', key)
-            if isinstance(event, dict):
-                total_risk += float(event.get('risk') or 0)
+        settled_risk = sum(float(row['Modeled risk $']) for row in graded)
+        pending_risk = sum(
+            float(row['Modeled risk $']) for row in output
+            if row['Official grade'] == 'PENDING'
+        )
+        total_risk = settled_risk + pending_risk
+        roi = total_net / settled_risk if settled_risk else None
 
         st.markdown('##### 👑 Shadow V1 · Hypothetical Scoreboard')
         a, b, c = st.columns(3)
@@ -1473,14 +1472,29 @@ def shadow_v1_report(store):
         a, b, c = st.columns(3)
         a.metric('Win rate', f'{wins / len(graded):.1%}' if graded else '—')
         b.metric('Hypothetical P&L', f'${total_net:+.2f}')
-        c.metric('Total modeled risk', f'${total_risk:.2f}')
+        c.metric('Risk on graded', f'${settled_risk:.2f}')
+        a, b, c = st.columns(3)
+        a.metric('Return on graded risk', f'{roi:+.1%}' if roi is not None else '—')
+        b.metric('Pending risk', f'${pending_risk:.2f}')
+        c.metric('All modeled risk', f'${total_risk:.2f}')
         st.caption(
             f'{len(graded)} officially graded · {len(output) - len(graded)} pending. '
-            'Results are hypothetical, not actual fills or V4 paper P&L. '
-            'Total modeled risk includes pending observations; '
-            'selected observations are not independent.'
+            'P&L and return use graded observations only. '
+            'Risk includes estimated entry fees; hypothetical, not actual fills or V4 P&L.'
         )
-        with st.expander('Shadow V1 · observation details', expanded=False):
+        st.markdown('**Per-observation results**')
+        st.dataframe(
+            [{
+                'Time CT': row['Observed CT'],
+                'Side': row['Side'],
+                'Risk $': row['Modeled risk $'],
+                'Result': row['Official grade'],
+                'P&L $': row['Hypothetical net $'],
+            } for row in output],
+            hide_index=True,
+            use_container_width=True,
+        )
+        with st.expander('Shadow V1 · full observation details', expanded=False):
             st.dataframe(output, hide_index=True, use_container_width=True)
 
 
