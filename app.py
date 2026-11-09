@@ -1,26 +1,30 @@
 
 """
 QUEEN'S EDGE | 254
-SHADOW V1 CONTRACT PROTECTION
+SHADOW V1 RECORDING REPAIR
 
 PAPER ONLY — NO REAL ORDERS
 
-Preserves the existing Queen's Edge dashboard.
-Prevents new opposite-side Shadow V1 observations
-for the same BTC 15-minute contract.
+Preserves the existing dashboard, chart, Near Miss,
+and V4 paper scanner.
 
-Historical reporting uses only the earliest
-valid observation per contract.
+Shadow V1:
+- Uses the original eligibility checks
+- Does not create premature contract locks
+- Saves one observation per BTC 15-minute contract
+- Preserves existing history
+- Excludes historical duplicates from the scoreboard
+- Shows observation diagnostics
 
-Historical records are never deleted.
-V4 paper entries remain untouched.
+No real-money trading or order submission.
 """
 
 from pathlib import Path
-from datetime import datetime, timezone
+from collections import Counter
 import traceback
 
 import streamlit as st
+
 
 ROOT = Path(__file__).resolve().parent
 
@@ -46,15 +50,11 @@ def check_files():
         st.stop()
 
 
-def install_shadow_fix(base):
-    """
-    Patch Shadow V1 observation and reporting only.
-
-    Existing historical records remain stored.
-    Other Queen's Edge functions are unchanged.
-    """
+def install_shadow_repair(base):
 
     original_observe = base.shadow_v1_observe
+
+    diagnostics = Counter()
 
     def load_history(store):
         records = []
@@ -78,11 +78,13 @@ def install_shadow_fix(base):
 
             if not isinstance(batch, list):
                 raise RuntimeError(
-                    "Shadow history could not be verified"
+                    "Shadow history unavailable"
                 )
 
             for item in batch:
-                key = str(item.get("name") or "")
+                key = str(
+                    item.get("name") or ""
+                )
 
                 if not key.endswith(".json"):
                     continue
@@ -94,7 +96,7 @@ def install_shadow_fix(base):
 
                 if not isinstance(event, dict):
                     raise RuntimeError(
-                        "Stored Shadow observation unreadable"
+                        "Unreadable Shadow history record"
                     )
 
                 records.append((key, event))
@@ -115,7 +117,10 @@ def install_shadow_fix(base):
         selected = {}
 
         for key, event in records:
-            ticker = str(event.get("ticker") or "")
+            ticker = str(
+                event.get("ticker") or ""
+            )
+
             observed = base.utc(
                 event.get("observed_at")
             )
@@ -145,6 +150,99 @@ def install_shadow_fix(base):
             reverse=True,
         )
 
+    class ShadowStore:
+        """
+        Storage adapter used only by the original
+        Shadow V1 observation function.
+
+        The original function performs all eligibility
+        checks before calling store.once().
+
+        We intercept only that final save operation.
+        """
+
+        def __init__(self, actual_store, history):
+            self.actual_store = actual_store
+            self.existing_tickers = {
+                str(event.get("ticker"))
+                for _, event in history
+                if event.get("ticker")
+            }
+
+        def __getattr__(self, name):
+            return getattr(
+                self.actual_store,
+                name,
+            )
+
+        def once(self, prefix, key, event):
+            if prefix != "shadow_v1_rejections":
+                return self.actual_store.once(
+                    prefix, key, event
+                )
+
+            ticker = str(
+                event.get("ticker") or ""
+            )
+
+            if not ticker.startswith("KXBTC15M-"):
+                diagnostics["invalid_ticker"] += 1
+                return None
+
+            if ticker in self.existing_tickers:
+                diagnostics["duplicate_blocked"] += 1
+                return None
+
+            # The canonical key is shared by ABOVE
+            # and BELOW for the same contract.
+            #
+            # This replaces the old side-specific key.
+            # The first successful write wins.
+            canonical_key = (
+                "contract_" + ticker + ".json"
+            )
+
+            saved = self.actual_store.once(
+                "shadow_v1_rejections",
+                canonical_key,
+                event,
+            )
+
+            if not isinstance(saved, dict):
+                diagnostics["save_unverified"] += 1
+                return saved
+
+            if (
+                saved.get("ticker") != ticker
+                or saved.get("side") != event.get("side")
+                or saved.get("observed_at")
+                != event.get("observed_at")
+            ):
+                diagnostics["duplicate_blocked"] += 1
+                return saved
+
+            # Verify the observation can be read.
+            verified = self.actual_store.get(
+                "shadow_v1_rejections",
+                canonical_key,
+            )
+
+            if not isinstance(verified, dict):
+                diagnostics["save_unverified"] += 1
+                return saved
+
+            if (
+                verified.get("ticker") == ticker
+                and verified.get("observed_at")
+                == event.get("observed_at")
+            ):
+                diagnostics["saved"] += 1
+                self.existing_tickers.add(ticker)
+            else:
+                diagnostics["save_unverified"] += 1
+
+            return saved
+
     def protected_observe(
         store,
         market,
@@ -154,161 +252,105 @@ def install_shadow_fix(base):
         trade_time,
         multiplier,
     ):
+        diagnostics["calls"] += 1
+
         ticker = str(
             (market or {}).get("ticker") or ""
         )
 
         if not ticker.startswith("KXBTC15M-"):
+            diagnostics["invalid_ticker"] += 1
             return
 
-        # Never create an opposite-side observation
-        # when historical evidence already exists.
-        records = load_history(store)
+        try:
+            history = load_history(store)
 
-        if any(
-            event.get("ticker") == ticker
-            for _, event in records
-        ):
-            return
+            existing = {
+                str(event.get("ticker") or "")
+                for _, event in history
+            }
 
-        # Immutable contract claim protects against
-        # concurrent dashboard sessions.
-        claim_key = ticker + ".json"
+            if ticker in existing:
+                diagnostics["duplicate_blocked"] += 1
+                return
 
-        existing = store.get(
-            "shadow_v1_contract_claims",
-            claim_key,
-        )
+            adapter = ShadowStore(
+                store,
+                history,
+            )
 
-        if existing is not None:
-            return
+            before = diagnostics["saved"]
 
-        # Check all eligibility conditions before
-        # claiming the contract.
-        if not base.snapshot_current(
-            quote_at, trade_time
-        ):
-            return
+            # IMPORTANT:
+            # The original function handles
+            # freshness, RSI/EMA assessment,
+            # entry window, bid/ask, spread,
+            # depth, size, and rejection reasons.
+            #
+            # No additional eligibility rules
+            # are imposed here.
+            original_observe(
+                adapter,
+                market,
+                result,
+                reasons,
+                quote_at,
+                trade_time,
+                multiplier,
+            )
 
-        if result.get("status") not in (
-            "FILTERED", "CANDIDATE"
-        ):
-            return
+            if diagnostics["saved"] == before:
+                diagnostics["no_new_save"] += 1
 
-        side = result.get("side")
-
-        if side not in ("ABOVE", "BELOW"):
-            return
-
-        age = result.get("candle_age")
-
-        if age is None or not -3 <= age <= 90:
-            return
-
-        close = base.utc(
-            market.get("close_time")
-        )
-
-        if close is None:
-            return
-
-        seconds = (
-            close - base.now_utc()
-        ).total_seconds()
-
-        if not 180 <= seconds <= 600:
-            return
-
-        ask = base.quote(market, side, "ask")
-        bid = base.quote(market, side, "bid")
-
-        if (
-            ask is None
-            or bid is None
-            or not base.SHADOW_MIN_ASK
-            <= ask <= base.SHADOW_MAX_ASK
-            or not 0 < bid <= ask < 1
-            or ask - bid > 0.030001
-        ):
-            return
-
-        price = base.cents_round(
-            ask + base.SLIPPAGE
-        )
-
-        qty, _, _ = base.size_for(
-            price, multiplier
-        )
-
-        depth = base.available(
-            market, side, "ask"
-        )
-
-        if (
-            qty < 1
-            or depth is None
-            or depth < qty
-        ):
-            return
-
-        why = list(
-            reasons
-            or result.get("reasons")
-            or []
-        )
-
-        if not why:
-            return
-
-        # Claim is written only after eligibility.
-        claim = {
-            "ticker": ticker,
-            "side": side,
-            "created_at": (
-                base.now_utc().isoformat()
-            ),
-            "version": "shadow-v1-protection",
-        }
-
-        saved = store.once(
-            "shadow_v1_contract_claims",
-            claim_key,
-            claim,
-        )
-
-        # If another session claimed first,
-        # do not write the competing observation.
-        if (
-            saved.get("side") != side
-            or saved.get("created_at")
-            != claim["created_at"]
-        ):
-            return
-
-        original_observe(
-            store,
-            market,
-            result,
-            reasons,
-            quote_at,
-            trade_time,
-            multiplier,
-        )
+        except Exception:
+            diagnostics["errors"] += 1
+            raise
 
     def protected_report(store):
+
         with st.expander(
             "👑 Shadow Tracker V1 · "
             "missed opportunity study",
             expanded=False,
         ):
             st.caption(
+                "Forward-only hypothetical observations. "
                 "One counted observation per BTC "
-                "15-minute contract. Historical "
-                "duplicates remain archived but "
-                "are excluded from performance."
+                "15-minute contract. No real orders "
+                "and no impact on V4 paper P&L."
             )
 
+            with st.expander(
+                "Shadow V1 · recording diagnostics",
+                expanded=False,
+            ):
+                st.caption(
+                    "Counters reset when the Python "
+                    "process restarts. A call without "
+                    "a save can mean the original "
+                    "eligibility rules were not met."
+                )
+
+                st.json({
+                    "Observation calls": diagnostics["calls"],
+                    "Saved this process": diagnostics["saved"],
+                    "Duplicates blocked": diagnostics[
+                        "duplicate_blocked"
+                    ],
+                    "No new save": diagnostics[
+                        "no_new_save"
+                    ],
+                    "Save unverified": diagnostics[
+                        "save_unverified"
+                    ],
+                    "Invalid ticker": diagnostics[
+                        "invalid_ticker"
+                    ],
+                    "Errors": diagnostics["errors"],
+                })
+
             records = load_history(store)
+
             selected = earliest_per_contract(
                 records
             )
@@ -321,6 +363,7 @@ def install_shadow_fix(base):
             checks = 0
 
             for key, event, observed in selected:
+
                 final = store.get(
                     "shadow_v1_finals",
                     key,
@@ -404,26 +447,29 @@ def install_shadow_fix(base):
                     event.get("risk") or 0
                 )
 
-                if final is not None:
-                    result = (
-                        "WIN"
-                        if final.get("win")
-                        else "LOSS"
-                    )
+                result = "PENDING"
+                pnl = None
 
+                if isinstance(final, dict):
                     pnl = base.number(
                         final.get(
                             "hypothetical_pnl"
                         )
                     )
 
-                    # Do not count malformed grades.
-                    if pnl is None:
-                        result = "PENDING"
-
-                else:
-                    result = "PENDING"
-                    pnl = None
+                    if (
+                        pnl is not None
+                        and isinstance(
+                            final.get("win"), bool
+                        )
+                    ):
+                        result = (
+                            "WIN"
+                            if final["win"]
+                            else "LOSS"
+                        )
+                    else:
+                        pnl = None
 
                 output.append({
                     "Time CT": (
@@ -433,9 +479,7 @@ def install_shadow_fix(base):
                             "%m/%d %H:%M:%S"
                         )
                     ),
-                    "Ticker": event.get(
-                        "ticker"
-                    ),
+                    "Ticker": event.get("ticker"),
                     "Side": event.get("side"),
                     "Ask ¢": round(
                         float(
@@ -452,15 +496,19 @@ def install_shadow_fix(base):
                     "Why V4 skipped": "; ".join(
                         map(
                             str,
-                            event.get("reasons")
-                            or [],
+                            event.get("reasons") or [],
                         )
                     ),
                 })
 
+            st.markdown(
+                "##### 👑 Shadow V1 · "
+                "Hypothetical Scoreboard"
+            )
+
             if not output:
                 st.info(
-                    "No Shadow V1 observations yet."
+                    "No Shadow observations recorded yet."
                 )
                 return
 
@@ -500,14 +548,11 @@ def install_shadow_fix(base):
                 else None
             )
 
-            st.markdown(
-                "##### 👑 Shadow V1 · "
-                "Hypothetical Scoreboard"
-            )
-
             a, b, c = st.columns(3)
+
             a.metric(
-                "Observations", len(output)
+                "Observations",
+                len(output),
             )
             b.metric("Wins", wins)
             c.metric("Losses", losses)
@@ -584,8 +629,7 @@ def install_shadow_fix(base):
             )
 
             with st.expander(
-                "Shadow V1 · full "
-                "observation details",
+                "Shadow V1 · full observation details",
                 expanded=False,
             ):
                 st.dataframe(
@@ -604,7 +648,7 @@ def main():
     try:
         import queens_preview_base as base
 
-        install_shadow_fix(base)
+        install_shadow_repair(base)
 
         base.launch()
 
@@ -633,7 +677,8 @@ def main():
             )
 
         st.caption(
-            "Paper only. No real orders."
+            "Paper-only dashboard. "
+            "No real orders are sent."
         )
 
 
