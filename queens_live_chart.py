@@ -439,7 +439,7 @@ let cached=null;
 let markers=[];
 let renderedTime=0;
 
-const viewKey='queens-edge-254-btc-view-v3';
+const viewKey='queens-edge-254-btc-view-v4';
 const settingsKey='queens-edge-254-chart-settings-v1';
 
 let savedView=null;
@@ -1043,7 +1043,7 @@ function followLive(){
  });
 
  charts[0].timeScale().setVisibleLogicalRange({
-  from:Math.max(0,bars.length-60),
+  from:Math.max(0,bars.length-30),
   to:bars.length+4
  });
 
@@ -1132,7 +1132,9 @@ function calculate(){
 
  chartReady=true;
  needsReset=false;
- renderedTime=bars.at(-1).time;
+ const newRenderedTime=bars.at(-1).time;
+ const advancedToNewCandle=wasReady&&newRenderedTime>renderedTime;
+ renderedTime=newRenderedTime;
 
  if(full){
   if(userAdjustedView&&savedView){
@@ -1140,6 +1142,18 @@ function calculate(){
   }else if(!wasReady){
    followLive();
   }
+ }
+ // Hold the chosen 30-candle span steady while following the live edge.
+ // Reapply after history setData() and whenever a new minute begins.
+ if(!userAdjustedView&&(full||advancedToNewCandle)){
+  restoringView=true;
+  try{
+   charts[0].timeScale().setVisibleLogicalRange({
+    from:Math.max(0,bars.length-30),
+    to:bars.length+4
+   });
+  }catch(e){}
+  restoringView=false;
  }
 
  const i=bars.length-1;
@@ -1649,9 +1663,7 @@ function start(){
 
  for(
   const event of [
-   'pointerdown',
-   'wheel',
-   'touchstart'
+   'wheel'
   ]
  ){
   $('main').addEventListener(
@@ -1660,6 +1672,23 @@ function start(){
    {passive:true}
   );
  }
+
+ let dragStart=null;
+ $('main').addEventListener('pointerdown',e=>{
+  dragStart={x:e.clientX,y:e.clientY};
+ },{passive:true});
+ $('main').addEventListener('pointermove',e=>{
+  if(dragStart&&Math.hypot(e.clientX-dragStart.x,e.clientY-dragStart.y)>10){
+   manualView();
+   dragStart=null;
+  }
+ },{passive:true});
+ for(const ev of ['pointerup','pointercancel','pointerleave']){
+  $('main').addEventListener(ev,()=>{dragStart=null;},{passive:true});
+ }
+ $('main').addEventListener('touchstart',e=>{
+  if(e.touches.length>1)manualView();
+ },{passive:true});
 
  if(userAdjustedView){
   main.applyOptions({
