@@ -1773,6 +1773,7 @@ def _run_paper_engine(
     )
 
 
+@st.fragment(run_every="15s")
 def render_paper_engine(*args, **kwargs):
     # Guidance stays visible above the preserved live chart.
     # Read-only journal access; any storage problem fails closed.
@@ -2228,6 +2229,13 @@ def launch():
         st.stop()
 
     source = original.read_text(encoding='utf-8')
+    # The chart maintains its own Coinbase WebSocket. Disable only the
+    # original whole-page timer; the isolated V4 fragment scans every 15s.
+    full_page_timer = 'st_autorefresh(interval=15_000, limit=None, key="btc_full_refresh")'
+    if source.count(full_page_timer) != 1:
+        st.error('Preview compatibility check failed: original refresh timer')
+        st.stop()
+    source = source.replace(full_page_timer, '# Whole-page refresh disabled in preview; V4 fragment runs independently.', 1)
     source = source.replace(
         'st.caption(\n    "⚡ Live Kalshi quotes · "\n    "🔐 Dual Strong LOCK · "\n    "🐋 Pressure Radar · "\n    "📊 Paper Performance"\n)\n',
         '', 1,
@@ -2351,7 +2359,6 @@ def launch():
 
 if __name__ == '__main__':
     launch()
-
 
 
 
