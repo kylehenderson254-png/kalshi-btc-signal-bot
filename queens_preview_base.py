@@ -1336,6 +1336,125 @@ def near_miss_report(store):
             st.caption(
                 'No price-eligible rejected setups recorded yet.'
             )
+# Independent rejected-setup study. Does not create V4 entries or exits.
+SHADOW_MIN_ASK = 0.20
+SHADOW_MAX_ASK = 0.85
+
+
+def shadow_v1_observe(store, market, result, reasons, quote_at, trade_time, multiplier):
+    """One forward observation per ticker/side; no backfills or orders."""
+    if not snapshot_current(quote_at, trade_time):
+        return
+    if result.get('status') not in ('FILTERED', 'CANDIDATE'):
+        return
+    if result.get('candle_age') is None or not -3 <= result['candle_age'] <= 90:
+        return
+    ticker = str(market.get('ticker') or '')
+    close = utc(market.get('close_time'))
+    if not ticker.startswith('KXBTC15M-') or close is None:
+        return
+    seconds = (close - now_utc()).total_seconds()
+    if not 180 <= seconds <= 600:
+        return
+    side = result.get('side')
+    if side not in ('ABOVE', 'BELOW'):
+        return
+    ask = quote(market, side, 'ask')
+    bid = quote(market, side, 'bid')
+    if (ask is None or bid is None or
+            not SHADOW_MIN_ASK <= ask <= SHADOW_MAX_ASK or
+            not 0 < bid <= ask < 1 or ask - bid > 0.030001):
+        return
+    estimated_price = cents_round(ask + SLIPPAGE)
+    qty, estimated_fee, risk = size_for(estimated_price, multiplier)
+    depth = available(market, side, 'ask')
+    if qty < 1 or depth is None or depth < qty:
+        return
+    # A candidate is shadowed only when V4's additional rules reject it.
+    why = list(reasons or result.get('reasons') or [])
+    if not why:
+        return
+    key = f'{int(close.timestamp() * 1000)}_{ticker}_{side}.json'
+    event = {
+        'version': 'shadow-v1', 'ticker': ticker, 'side': side,
+        'observed_at': now_utc().isoformat(), 'close_ts': close.timestamp(),
+        'ask': ask, 'bid': bid, 'estimated_price': estimated_price,
+        'qty': qty, 'fee': estimated_fee, 'risk': risk,
+        'target': number(market.get('floor_strike')),
+        'distance': result.get('distance'), 'rsi': result.get('rsi'),
+        'ema_trend': result.get('ema_trend'), 'reasons': why,
+        'note': 'Rejected forward observation only; not a V4 paper entry or order',
+    }
+    store.once('shadow_v1_rejections', key, event)
+
+
+def shadow_v1_report(store):
+    """Read/grade separate rejected setups from official settlement only."""
+    with st.expander('👑 Shadow Tracker V1 · missed opportunity study', expanded=False):
+        st.caption(
+            'Forward-only rejected observations at 20–85¢ ask, ≤3¢ spread, '
+            'with fresh data and displayed depth. One observation per contract '
+            'and side; not trades. Does not affect V4 paper P&L.'
+        )
+        items = store.request('POST', '/object/list/' + BUCKET, {
+            'prefix': 'shadow_v1_rejections', 'limit': 200, 'offset': 0,
+            'sortBy': {'column': 'name', 'order': 'desc'},
+        })
+        if not isinstance(items, list):
+            st.caption('Shadow history unavailable.')
+            return
+        output = []
+        checks = 0
+        for item in items:
+            key = str(item.get('name') or '')
+            if not key.endswith('.json'):
+                continue
+            event = store.get('shadow_v1_rejections', key)
+            if not isinstance(event, dict):
+                continue
+            final = store.get('shadow_v1_finals', key)
+            if (not final and checks < 3 and
+                    now_utc().timestamp() > float(event.get('close_ts') or 0) + 60):
+                checks += 1
+                try:
+                    market = public_get('/markets/' + event['ticker'])['market']
+                    outcome = market.get('result')
+                    if (market.get('status') in ('settled', 'finalized') and
+                            outcome in ('yes', 'no')):
+                        won = ((event['side'] == 'ABOVE') == (outcome == 'yes'))
+                        final = store.once('shadow_v1_finals', key, {
+                            'result': outcome, 'win': won,
+                            'hypothetical_pnl': round(
+                                (event['qty'] if won else 0) - event['risk'], 6
+                            ),
+                            'graded_at': now_utc().isoformat(),
+                        })
+                except (requests.RequestException, ValueError, KeyError, TypeError):
+                    pass
+            observed = utc(event.get('observed_at'))
+            output.append({
+                'Observed CT': observed.astimezone(CT).strftime('%m/%d %H:%M:%S') if observed else '—',
+                'Ticker': event.get('ticker'), 'Side': event.get('side'),
+                'Ask ¢': round(float(event.get('ask') or 0) * 100, 1),
+                'Why V4 skipped': '; '.join(map(str, event.get('reasons') or [])),
+                'Official grade': ('WIN' if final.get('win') else 'LOSS') if final else 'PENDING',
+                'Hypothetical net $': final.get('hypothetical_pnl') if final else None,
+            })
+        if not output:
+            st.caption('No qualifying rejected observations recorded yet. Keep the dashboard open to collect forward data.')
+            return
+        graded = [row for row in output if row['Official grade'] != 'PENDING']
+        wins = sum(row['Official grade'] == 'WIN' for row in graded)
+        st.metric('Shadow observations / officially graded', f'{len(output)} / {len(graded)}')
+        if graded:
+            st.caption(
+                f'Hypothetical wins: {wins}/{len(graded)} ({wins / len(graded):.1%}); '
+                f'combined hypothetical net: ${sum(row["Hypothetical net $"] for row in graded):+.2f}. '
+                'Selected observations are not independent; results are not realized or V4 paper P&L.'
+            )
+        st.dataframe(output, hide_index=True, use_container_width=True)
+
+
 def evaluate_papers(
     store,
     rows,
@@ -1563,6 +1682,16 @@ def evaluate_papers(
         multiplier,
     )
 
+    # Shadow observations must never interrupt the existing V4 scanner.
+    if not proposed and enabled and df is not None:
+        try:
+            shadow_v1_observe(
+                store, fresh_market, result, reasons,
+                quote_at, trade_time, multiplier,
+            )
+        except Exception:
+            pass
+
     if not proposed:
         st.session_state.pop('qe_v4_confirm', None)
 
@@ -1763,6 +1892,10 @@ def _run_paper_engine(
                 'Near-miss reporting unavailable; '
                 'existing paper scanner unchanged.'
             )
+        try:
+            shadow_v1_report(store)
+        except Exception:
+            st.caption('Shadow Tracker reporting unavailable; V4 scanner unchanged.')
 
     st.caption(
         'Actual paper strategy holds until official settlement. '
@@ -2394,7 +2527,6 @@ def launch():
 
 if __name__ == '__main__':
     launch()
-
 
 
 
