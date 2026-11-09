@@ -1308,28 +1308,35 @@ def near_miss_report(store):
             )
 
         if output:
-            st.dataframe(
-                output,
-                hide_index=True,
-                use_container_width=True,
-            )
-
             graded = [
                 item for item in output
                 if item['Outcome'] != 'PENDING'
             ]
-
-            if graded:
-                wins = sum(
-                    item['Outcome'] == 'WIN'
-                    for item in graded
-                )
-
-                st.caption(
-                    f'Graded near misses: {len(graded)}; '
-                    f'hypothetical wins: {wins}. '
-                    'Not actual fills, and selected observations '
-                    'are not independent.'
+            wins = sum(item['Outcome'] == 'WIN' for item in graded)
+            losses = len(graded) - wins
+            hypothetical_net = sum(
+                float(item['Hypothetical net $'] or 0)
+                for item in graded
+            )
+            st.markdown('##### 👑 Near Miss · Hypothetical Scoreboard')
+            a, b, c = st.columns(3)
+            a.metric('Observations', len(output))
+            b.metric('Wins', wins)
+            c.metric('Losses', losses)
+            a, b, c = st.columns(3)
+            a.metric('Win rate', f'{wins / len(graded):.1%}' if graded else '—')
+            b.metric('Hypothetical P&L', f'${hypothetical_net:+.2f}')
+            c.metric('Pending', len(output) - len(graded))
+            st.caption(
+                'Rejected setups only · official settlement grades · '
+                'not actual fills or V4 paper P&L. '
+                'Selected observations are not independent.'
+            )
+            with st.expander('Near Miss · observation details', expanded=False):
+                st.dataframe(
+                    output,
+                    hide_index=True,
+                    use_container_width=True,
                 )
 
         else:
@@ -1445,14 +1452,36 @@ def shadow_v1_report(store):
             return
         graded = [row for row in output if row['Official grade'] != 'PENDING']
         wins = sum(row['Official grade'] == 'WIN' for row in graded)
-        st.metric('Shadow observations / officially graded', f'{len(output)} / {len(graded)}')
-        if graded:
-            st.caption(
-                f'Hypothetical wins: {wins}/{len(graded)} ({wins / len(graded):.1%}); '
-                f'combined hypothetical net: ${sum(row["Hypothetical net $"] for row in graded):+.2f}. '
-                'Selected observations are not independent; results are not realized or V4 paper P&L.'
-            )
-        st.dataframe(output, hide_index=True, use_container_width=True)
+        losses = len(graded) - wins
+        total_net = sum(float(row['Hypothetical net $'] or 0) for row in graded)
+        # Each saved observation uses its own fee-inclusive risk, capped at $5.
+        # Show the actual modeled stake, not a fictitious flat $5 bet.
+        total_risk = 0.0
+        for item in items:
+            key = str(item.get('name') or '')
+            if not key.endswith('.json'):
+                continue
+            event = store.get('shadow_v1_rejections', key)
+            if isinstance(event, dict):
+                total_risk += float(event.get('risk') or 0)
+
+        st.markdown('##### 👑 Shadow V1 · Hypothetical Scoreboard')
+        a, b, c = st.columns(3)
+        a.metric('Observations', len(output))
+        b.metric('Wins', wins)
+        c.metric('Losses', losses)
+        a, b, c = st.columns(3)
+        a.metric('Win rate', f'{wins / len(graded):.1%}' if graded else '—')
+        b.metric('Hypothetical P&L', f'${total_net:+.2f}')
+        c.metric('Total modeled risk', f'${total_risk:.2f}')
+        st.caption(
+            f'{len(graded)} officially graded · {len(output) - len(graded)} pending. '
+            'Results are hypothetical, not actual fills or V4 paper P&L. '
+            'Total modeled risk includes pending observations; '
+            'selected observations are not independent.'
+        )
+        with st.expander('Shadow V1 · observation details', expanded=False):
+            st.dataframe(output, hide_index=True, use_container_width=True)
 
 
 def evaluate_papers(
@@ -2527,7 +2556,6 @@ def launch():
 
 if __name__ == '__main__':
     launch()
-
 
 
 
