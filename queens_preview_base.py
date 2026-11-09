@@ -1834,6 +1834,194 @@ def evaluate_papers(
         f"· risk ${saved['risk']:.2f}. No order was sent.",
         [],
     )
+# Independent high-price paper experiment. V4 and historical journals stay unchanged.
+HIGH_MIN_ASK = 0.70
+HIGH_MAX_ASK = 0.90
+HIGH_TP_MIN_NET = 0.01  # Net positive after modeled fees/slippage, not gross.
+
+
+def high_price_rows(store):
+    items = store.request('POST', '/object/list/' + BUCKET, {
+        'prefix': 'high_price_entries', 'limit': 200, 'offset': 0,
+        'sortBy': {'column': 'name', 'order': 'desc'},
+    })
+    if not isinstance(items, list):
+        raise RuntimeError('High-price paper journal listing unavailable')
+    output = []
+    for item in items:
+        key = str(item.get('name') or '')
+        if not key.endswith('.json'):
+            continue
+        entry = store.get('high_price_entries', key)
+        if not isinstance(entry, dict):
+            raise RuntimeError('High-price entry record could not be read')
+        output.append({
+            'key': key, 'entry': entry,
+            'exit': store.get('high_price_exits', key),
+            'final': store.get('high_price_finals', key),
+        })
+    return output
+
+
+def high_price_scan(store, market, verified, quote_fn, candle_fn, v4_rows):
+    """Forward-only, independent hypothetical test; no order placement."""
+    ticker = str((market or {}).get('ticker') or '')
+    if not ticker.startswith('KXBTC15M-'):
+        return 'WAIT · No active BTC 15-minute market'
+    records = high_price_rows(store)
+    active = next((r for r in records if r['entry'].get('ticker') == ticker), None)
+    # Settle older hypothetical positions. Never overwrite immutable exit events.
+    checks = 0
+    for row in records:
+        if row['final'] or now_utc().timestamp() < float(row['entry']['close_ts']) + 60 or checks >= 3:
+            continue
+        checks += 1
+        try:
+            settled = public_get('/markets/' + row['entry']['ticker'])['market']
+            outcome = settled.get('result')
+            if settled.get('status') not in ('settled', 'finalized') or outcome not in ('yes', 'no'):
+                continue
+            entry = row['entry']
+            won = (entry['side'] == 'ABOVE') == (outcome == 'yes')
+            hold_net = round((entry['qty'] if won else 0) - entry['risk'], 6)
+            final = {
+                'outcome': outcome, 'hold_net': hold_net,
+                'modeled_net': row['exit']['pnl'] if row['exit'] else hold_net,
+                'exit_mode': 'MODELED_EARLY_EXIT' if row['exit'] else 'SETTLEMENT',
+                'graded_at': now_utc().isoformat(),
+            }
+            row['final'] = store.once('high_price_finals', row['key'], final)
+        except (requests.RequestException, ValueError, KeyError, TypeError):
+            continue
+
+    # Only current market requires live market data. Check saved open entry first.
+    if active and (active['exit'] or active['final']):
+        return 'MONITOR · This contract already has a high-price paper entry'
+    close = utc((market or {}).get('close_time'))
+    if close is None or (close - now_utc()).total_seconds() <= 0:
+        return 'WAIT · Contract ended or close time unavailable'
+    if not verified:
+        return 'WAIT · Direction not verified'
+    df, feed_name, _, _ = _get_candles(candle_fn)
+    fresh, quote_at, spot, trade_at = fresh_snapshot(ticker)
+    if fresh.get('status') != 'active' or not snapshot_current(quote_at, trade_at):
+        return 'WAIT · Fresh market data unavailable'
+    seconds = (utc(fresh['close_time']) - now_utc()).total_seconds()
+    if seconds <= 0:
+        return 'WAIT · Market closed'
+    if active:
+        entry = active['entry']
+        estimate = exit_estimate(entry, fresh)
+        if estimate is None:
+            return 'OPEN · No verified executable-depth exit estimate'
+        if estimate['pnl'] >= HIGH_TP_MIN_NET and snapshot_current(quote_at, trade_at):
+            event = {
+                **estimate, 'observed_bid': quote(fresh, entry['side'], 'bid'),
+                'observed_at': now_utc().isoformat(),
+                'reason': 'First observed positive modeled net exit',
+                'note': 'Hypothetical exit at bid minus slippage, not a guaranteed fill',
+            }
+            store.once('high_price_exits', active['key'], event)
+            return f"MODELED TAKE PROFIT · {entry['side']} · ${estimate['pnl']:+.2f} net"
+        return f"OPEN · {entry['side']} · estimated exit ${estimate['pnl']:+.2f} net"
+
+    # Preserve V4's contract-wide entry lock; shadow study can observe the
+    # same market but cannot be counted as a second V4 position.
+    if not 180 <= seconds <= 600:
+        st.session_state.pop('qe_high_confirm', None)
+        return 'WAIT · Outside 10–3 minute observation window'
+    if df is None or len(df) < 60:
+        return 'WAIT · Insufficient 1-minute candle history'
+    result = assess(fresh, fresh.get('floor_strike'), spot, df, seconds,
+                    bool(verified), quote_fn, False, feed_name)
+    side = result.get('side')
+    if side not in ('ABOVE', 'BELOW') or result.get('status') not in ('CANDIDATE', 'FILTERED'):
+        return 'WAIT · No eligible directional observation'
+    age = number(result.get('candle_age'))
+    if age is None or not -3 <= age <= 90:
+        return 'WAIT · Candle is stale'
+    trend = str(result.get('ema_trend') or '').upper()
+    if (side == 'ABOVE' and trend != 'UPWARD') or (side == 'BELOW' and trend != 'DOWNWARD'):
+        return 'WAIT · EMA trend not aligned'
+    ask, bid = quote(fresh, side, 'ask'), quote(fresh, side, 'bid')
+    if ask is None or bid is None or not (HIGH_MIN_ASK <= ask <= HIGH_MAX_ASK):
+        return 'WAIT · High-price ask outside 70–90¢'
+    if not 0 < bid <= ask < 1 or ask - bid > 0.030001:
+        return 'WAIT · Spread exceeds 3¢ or quotes invalid'
+    multiplier = series_fee()
+    price = cents_round(ask + SLIPPAGE)
+    if price >= 1:
+        return 'WAIT · Estimated entry fill invalid'
+    qty, entry_fee, risk = size_for(price, multiplier)
+    if qty < 1 or available(fresh, side, 'ask') is None or available(fresh, side, 'ask') < qty:
+        return 'WAIT · Insufficient displayed entry depth'
+    stamp = now_utc().timestamp()
+    old = st.session_state.get('qe_high_confirm')
+    if (not old or old.get('ticker') != ticker or old.get('side') != side
+            or stamp - old['time'] > 45 or price > old['price'] + 0.03):
+        st.session_state['qe_high_confirm'] = {
+            'ticker': ticker, 'side': side, 'time': stamp, 'price': price,
+        }
+        return 'CONFIRMING · Waiting for second eligible observation'
+    if stamp - old['time'] < 10:
+        return 'CONFIRMING · Need at least 10 seconds'
+    if not snapshot_current(quote_at, trade_at):
+        return 'WAIT · Quotes aged before recording'
+    key = f'{int(utc(fresh["close_time"]).timestamp()*1000)}_{ticker}.json'
+    entry = {
+        'strategy': 'high-price-70-90-early-net-v1', 'ticker': ticker,
+        'side': side, 'ask': ask, 'price': price, 'qty': qty,
+        'fee': entry_fee, 'risk': risk, 'fee_multiplier': multiplier,
+        'slippage': SLIPPAGE, 'close_ts': utc(fresh['close_time']).timestamp(),
+        'target': number(fresh.get('floor_strike')),
+        'observed_at': now_utc().isoformat(), 'ema_trend': trend,
+        'exit_policy': 'first_observed_positive_modeled_net',
+        'note': 'Paper observation only; no actual orders or guaranteed fills',
+    }
+    store.once('high_price_entries', key, entry)
+    st.session_state.pop('qe_high_confirm', None)
+    return f'PAPER ENTRY · {side} · {qty} at {price*100:.0f}¢ · ${risk:.2f} modeled risk'
+
+
+def high_price_report(store, message):
+    rows = high_price_rows(store)
+    completed = [r for r in rows if r['final'] or r['exit']]
+    pending = len(rows) - len(completed)
+    net = sum(float((r['exit'] or r['final']).get('pnl') if r['exit'] else
+                    r['final'].get('modeled_net') or 0) for r in completed)
+    wins = sum((r['exit']['pnl'] if r['exit'] else r['final']['modeled_net']) > 0
+               for r in completed)
+    st.markdown('##### 👑 HIGH-PRICE · EARLY EXIT PAPER TEST')
+    a, b, c, d = st.columns(4)
+    a.metric('Modeled net P&L', f'${net:+.2f}')
+    b.metric('Win rate', f'{wins/len(completed):.1%}' if completed else '—')
+    c.metric('Closed / open', f'{len(completed)} / {pending}')
+    d.metric('Observations', len(rows))
+    st.caption(message + ' · 70–90¢ entry ask; up to $5 modeled risk. '
+               'Exit is simulated at observed bid minus 1¢ and estimated fees. '
+               'Not guaranteed executable fills; never real orders.')
+    with st.expander('High-price paper history', expanded=False):
+        display = []
+        for row in rows:
+            entry, exit_event, final = row['entry'], row['exit'], row['final']
+            display.append({
+                'Time CT': (utc(entry.get('observed_at')).astimezone(CT)
+                            .strftime('%m/%d %H:%M:%S')),
+                'Ticker': entry['ticker'], 'Side': entry['side'],
+                'Entry ¢': round(entry['price'] * 100, 1),
+                'Qty': entry['qty'], 'Risk $': entry['risk'],
+                'Exit ¢': round(exit_event['price']*100, 1) if exit_event else None,
+                'Modeled net $': (exit_event['pnl'] if exit_event else
+                                  final['modeled_net'] if final else None),
+                'Status': ('MODELED EARLY EXIT' if exit_event else
+                           'SETTLED' if final else 'OPEN'),
+            })
+        if display:
+            st.dataframe(display, hide_index=True, use_container_width=True)
+        else:
+            st.caption('No high-price observations yet. Leave dashboard open to scan.')
+
+
 def _run_paper_engine(
     market,
     strike,
@@ -1886,6 +2074,16 @@ def _run_paper_engine(
         )
 
         paper_metrics(rows)
+        # Independent forward-only high-price test; its failures never block V4.
+        try:
+            high_message = high_price_scan(
+                store, market, verified, quote_fn, candle_fn, rows,
+            ) if enabled else 'PAUSED · Enable V4 paper switch to collect new high-price observations'
+            high_price_report(store, high_message)
+        except Exception as high_exc:
+            st.warning('High-price paper experiment paused; V4 is unaffected.')
+            with st.expander('High-price diagnostics', expanded=False):
+                st.code(str(high_exc))
         scan_status(kind, message, reasons)
 
     except Exception as exc:
@@ -2554,7 +2752,6 @@ def launch():
 
 if __name__ == '__main__':
     launch()
-
 
 
 
