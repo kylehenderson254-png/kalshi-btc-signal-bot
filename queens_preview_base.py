@@ -26,7 +26,10 @@ BUCKET = 'queens-edge-paper-v4'
 CT = ZoneInfo('America/Chicago')
 
 RISK = 5.0
-ENTRY_CAP = 0.7
+ENTRY_CAP = 0.56  # Effective fill including 1c slippage; 50-55c displayed ask preferred
+MIN_ASK = 0.50
+MAX_ASK = 0.55
+SHADOW_TARGETS = (0.70, 0.75, 0.80)
 SLIPPAGE = 0.01
 TAKE_PROFIT = 0.25
 STOP_REVIEW = 0.2
@@ -362,6 +365,7 @@ class PaperJournal:
                 'entry': entry,
                 'final': final,
                 'exit': None if final else self.get('exits', key),
+                'shadow': {int(t * 100): self.get('shadow', key[:-5] + f'_{int(t*100)}.json') for t in SHADOW_TARGETS},
             }
 
         with ThreadPoolExecutor(max_workers=6) as pool:
@@ -557,9 +561,9 @@ def candidate(market, result, df, spot, multiplier):
 
     price = cents_round(ask + SLIPPAGE)
 
-    if not 0 < price <= ENTRY_CAP:
+    if not MIN_ASK <= ask <= MAX_ASK or not 0 < price <= ENTRY_CAP:
         return None, [
-            'Experimental effective-entry cap is 70¢, including 1¢ slippage'
+            'Entry must be 50–55¢ ask, with 1¢ estimated adverse slippage'
         ]
 
     qty, entry_fee, risk = size_for(price, multiplier)
@@ -915,6 +919,7 @@ def paper_history(rows):
             entry = row['entry']
             final = row['final']
             exit_event = row['exit']
+            entry_shadow = row.get('shadow', {})
 
             display.append(
                 {
@@ -947,6 +952,9 @@ def paper_history(rows):
                         if final
                         else 'PENDING'
                     ),
+                    'Shadow 70¢ net $': (entry_shadow.get(70) or {}).get('estimated_pnl'),
+                    'Shadow 75¢ net $': (entry_shadow.get(75) or {}).get('estimated_pnl'),
+                    'Shadow 80¢ net $': (entry_shadow.get(80) or {}).get('estimated_pnl'),
                     'Exit': (
                         final['exit_reason']
                         if final
@@ -964,7 +972,8 @@ def paper_history(rows):
         )
 
         st.caption(
-            'Latest 200 entries shown. Older events remain stored. '
+            'Latest 200 entries shown. Shadow columns are hypothetical exits, '
+        'not filled trades. Older events remain stored. '
             'Only forward observations are entered; chart arrows '
             'are never backfilled. Fills and fees are estimates. '
             'V4 is separate from Early, Locked, WATCH and V2 history.'
@@ -1076,39 +1085,36 @@ def evaluate_papers(
             'waiting for a new snapshot'
         )
 
-    exit_message = None
-
+    # Settlement-only strategy: never create managed early exits.
+    # Shadow take-profit observations are separate, immutable and do not
+    # change the actual paper position or settlement result.
     for row in pending:
         entry = row['entry']
-        estimate = exit_estimate(entry, fresh_market)
-
-        if estimate:
-            reason = close_reason(
-                entry,
-                estimate,
-                live_spot,
-                result.get('ema_trend'),
-                seconds,
-            )
-
-            if reason:
-                if not snapshot_current(quote_at, trade_time):
-                    raise RuntimeError(
-                        'Exit snapshot aged before recording; '
-                        'waiting for a new snapshot'
-                    )
-
-                row['exit'] = store.once(
-                    'exits',
-                    row['key'],
-                    {
-                        **estimate,
-                        'reason': reason,
-                        'observed_at': now_utc().isoformat(),
-                    },
-                )
-
-                exit_message = 'PAPER EXIT SAVED · ' + reason
+        bid = quote(fresh_market, entry['side'], 'bid')
+        depth = available(fresh_market, entry['side'], 'bid')
+        if bid is None or depth is None or depth < entry['qty']:
+            continue
+        if not snapshot_current(quote_at, trade_time):
+            raise RuntimeError('Shadow quote aged before observation')
+        shadow = row.setdefault('shadow', {})
+        for threshold in SHADOW_TARGETS:
+            key = int(threshold * 100)
+            if shadow.get(key) is not None or bid < threshold:
+                continue
+            # Bid is an observed executable-side quote, not a guaranteed fill.
+            estimated_price = max(0.0, cents_round(bid - SLIPPAGE, False))
+            estimated_fee = fee(entry['qty'], estimated_price, entry['fee_multiplier'])
+            event = {
+                'target_cents': key,
+                'observed_bid': bid,
+                'estimated_exit_price': estimated_price,
+                'estimated_exit_fee': estimated_fee,
+                'estimated_pnl': round(entry['qty'] * estimated_price - estimated_fee - entry['risk'], 6),
+                'observed_at': now_utc().isoformat(),
+                'note': 'Observed bid/depth; simulated exit only, not an actual fill',
+            }
+            event_key = row['key'][:-5] + f'_{key}.json'
+            shadow[key] = store.once('shadow', event_key, event)
 
     file_key = (
         str(int(close.timestamp() * 1000))
@@ -1120,8 +1126,7 @@ def evaluate_papers(
     if any(row['key'] == file_key for row in rows):
         return (
             'MONITOR',
-            exit_message
-            or 'This market already has its one V4 paper entry. '
+            'This market already has its one V4 paper entry. '
             'Monitoring / awaiting official settlement.',
             [],
         )
@@ -1131,8 +1136,7 @@ def evaluate_papers(
 
         return (
             'PAUSED',
-            exit_message
-            or 'New paper entries paused; existing positions monitored.',
+            'New paper entries paused; existing positions monitored.',
             [],
         )
 
@@ -1245,10 +1249,13 @@ def evaluate_papers(
         'fee_model': (
             'Estimated quadratic taker, whole-cent assumed fills'
         ),
-        'strategy': 'V4-forward-v1',
+        'strategy': 'V4-settlement-50-55-shadow-v1',
         'take_profit_fraction': TAKE_PROFIT,
         'loss_review_fraction': STOP_REVIEW,
         'entry_cap': ENTRY_CAP,
+        'preferred_ask_min': MIN_ASK,
+        'preferred_ask_max': MAX_ASK,
+        'exit_policy': 'hold_until_official_settlement',
         'slippage': SLIPPAGE,
     }
 
@@ -1261,6 +1268,7 @@ def evaluate_papers(
             'entry': saved,
             'exit': None,
             'final': None,
+            'shadow': {},
         },
     )
 
@@ -1290,10 +1298,11 @@ def _run_paper_engine(
     )
 
     st.caption(
-        'Experimental settings unchanged: effective entry ≤70¢; '
-        'spread ≤3¢; $5 risk including fee estimate; '
-        '1¢ adverse slippage each way; two eligible observations '
-        'at least 10 seconds apart. Profitability is unproven.'
+        'Settlement test: preferred ask 50–55¢; $5 maximum including fees; '
+        'spread ≤3¢; '
+        '1¢ adverse slippage; two eligible observations at least '
+        '10 seconds apart. Hold until settlement; shadow 70/75/80¢ exits. '
+        'Profitability is unproven.'
     )
 
     rows = None
@@ -1344,19 +1353,17 @@ def _run_paper_engine(
         if not rows:
             st.caption(
                 'No V4 entries recorded yet. Scan counts show activity; '
-                'P&L starts after a qualifying entry, then an exit '
-                'or official settlement.'
+                'P&L starts after a qualifying entry and official settlement.'
             )
 
         paper_history(rows)
 
     st.caption(
-        'Managed policy: review exit at +25% / -20% of entry risk, '
-        'target cross, opposing confirmed EMA trend, or ≤75 seconds '
-        'left. Only evaluated while this dashboard is open. '
-        'Stops and liquidity are estimates. Matched totals include '
-        'only officially settled entries; early exits awaiting '
-        'settlement appear in history and Today realized.'
+        'Actual paper strategy holds until official settlement. '
+        'Shadow take-profit observations at 70/75/80¢ use observed bids '
+        'and displayed depth, with estimated slippage and fees; they are '
+        'not guaranteed fills. Shadow tracking runs only while this '
+        'dashboard is open. Missed price touches are not backfilled.'
     )
 
 
