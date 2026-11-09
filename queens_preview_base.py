@@ -1,3 +1,4 @@
+
 """QUEEN'S EDGE | 254 — compact preview dashboard.
 
 PAPER ONLY. NO REAL ORDERS.
@@ -522,7 +523,6 @@ def candidate(market, result, df, spot, multiplier):
         )
 
     side = result.get('side')
-
     if df is None or len(df) < 60 or 'time' not in df:
         return None, [
             'Need 60 consecutive 1-minute candles for this forward test'
@@ -758,87 +758,193 @@ def paper_metrics(rows):
         'Today · managed realized',
         f'${daily_pnl(rows):+.2f}',
     )
+
     if finals:
-        wins = sum(row['final']['managed_pnl'] > 0 for row in finals)
-        st.caption(f'Paper win rate (officially matched): {wins}/{len(finals)} = {wins/len(finals):.1%}. Estimated fills; not live results.')
+        wins = sum(
+            row['final']['managed_pnl'] > 0
+            for row in finals
+        )
+        st.caption(
+            f'Paper win rate (officially matched): '
+            f'{wins}/{len(finals)} = '
+            f'{wins / len(finals):.1%}. '
+            'Estimated fills; not live results.'
+        )
 
 
 def guidance_panel(market, verified, quote_fn, candle_fn, rows):
     """Paper-only, conservative guidance. No orders or automatic execution."""
     st.markdown('#### 👑 Trade guidance · paper only')
+
     ticker = str((market or {}).get('ticker') or '')
+
     if not ticker.startswith('KXBTC15M-'):
         st.info('WAIT · No active 15-minute BTC contract.')
         return
+
     try:
         df, feed_name, feed_errors, clock = _get_candles(candle_fn)
         live, quoted_at, spot, trade_at = fresh_snapshot(ticker)
         close = utc(live.get('close_time'))
         seconds = (close - now_utc()).total_seconds() if close else 0
+
         if live.get('status') != 'active' or seconds <= 0:
             st.info('WAIT · Contract inactive or closed.')
             return
-        result = assess(live, live.get('floor_strike'), spot, df,
-                        seconds, bool(verified), quote_fn, False, feed_name)
+
+        result = assess(
+            live,
+            live.get('floor_strike'),
+            spot,
+            df,
+            seconds,
+            bool(verified),
+            quote_fn,
+            False,
+            feed_name,
+        )
+
         if not snapshot_current(quoted_at, trade_at):
             st.warning('WAIT · Market data aged during analysis.')
             return
+
         trend = result.get('ema_trend')
         side = result.get('side')
         status = result.get('status')
         target = number(live.get('floor_strike'))
-        distance = spot - target if target is not None else None
-        open_rows = [r for r in rows if not r['final'] and not r['exit']
-                     and r['entry']['ticker'] == ticker]
+        distance = (
+            spot - target if target is not None else None
+        )
+
+        open_rows = [
+            r for r in rows
+            if not r['final']
+            and not r['exit']
+            and r['entry']['ticker'] == ticker
+        ]
+
         c1, c2, c3 = st.columns(3)
-        c1.metric('BTC vs target', f'${distance:+,.2f}' if distance is not None else '—')
-        c2.metric('Time remaining', f'{max(0, int(seconds)) // 60}:{max(0, int(seconds)) % 60:02d}')
-        c3.metric('EMA trend', str(trend or 'UNCONFIRMED'))
+        c1.metric(
+            'BTC vs target',
+            f'${distance:+,.2f}'
+            if distance is not None else '—',
+        )
+        c2.metric(
+            'Time remaining',
+            f'{max(0, int(seconds)) // 60}:'
+            f'{max(0, int(seconds)) % 60:02d}',
+        )
+        c3.metric(
+            'EMA trend',
+            str(trend or 'UNCONFIRMED'),
+        )
         if open_rows:
             for row in open_rows:
                 entry = row['entry']
                 estimate = exit_estimate(entry, live)
+
                 if estimate is None:
-                    st.warning('OPEN PAPER POSITION · Exit quote/size unavailable; do not assume a fill.')
+                    st.warning(
+                        'OPEN PAPER POSITION · Exit quote/size unavailable; '
+                        'do not assume a fill.'
+                    )
                     continue
-                reason = close_reason(entry, estimate, spot, trend, seconds)
-                st.metric('Estimated exit P&L · paper', f"${estimate['pnl']:+.2f}")
+
+                reason = close_reason(
+                    entry, estimate, spot, trend, seconds
+                )
+
+                st.metric(
+                    'Estimated exit P&L · paper',
+                    f"${estimate['pnl']:+.2f}",
+                )
+
                 if reason:
-                    st.error('EXIT REVIEW · ' + reason + ' · estimated exit '
-                             + f"{estimate['price']*100:.0f}¢")
+                    st.error(
+                        'EXIT REVIEW · ' + reason
+                        + ' · estimated exit '
+                        + f"{estimate['price'] * 100:.0f}¢"
+                    )
                 else:
-                    st.info('HOLD / MONITOR · No experimental exit trigger yet. '
-                            'A sudden reversal can occur before the next scan.')
+                    st.info(
+                        'HOLD / MONITOR · No experimental exit trigger yet. '
+                        'A sudden reversal can occur before the next scan.'
+                    )
+
         elif status == 'CANDIDATE' and side in ('ABOVE', 'BELOW'):
-            st.success(('BUY UP' if side == 'ABOVE' else 'BUY DOWN')
-                       + ' · PAPER CANDIDATE ONLY · Await entry filters and 10-second confirmation.')
-            st.caption('Not an instruction to place a real order. Liquidity, fees and '
-                       'the current contract price must pass the paper entry checks.')
+            st.success(
+                ('BUY UP' if side == 'ABOVE' else 'BUY DOWN')
+                + ' · PAPER CANDIDATE ONLY · Await entry filters '
+                'and 10-second confirmation.'
+            )
+            st.caption(
+                'Not an instruction to place a real order. '
+                'Liquidity, fees and the current contract price '
+                'must pass the paper entry checks.'
+            )
+
         else:
             reasons = result.get('reasons') or []
-            st.info('WAIT / NO TRADE · ' + ('; '.join(map(str, reasons[:3]))
-                                         if reasons else 'No confirmed entry setup.'))
+            st.info(
+                'WAIT / NO TRADE · '
+                + (
+                    '; '.join(map(str, reasons[:3]))
+                    if reasons
+                    else 'No confirmed entry setup.'
+                )
+            )
+
         if distance is not None and df is not None and len(df) >= 14:
             try:
                 import pandas as pd
+
                 prev = df['close'].shift(1)
-                tr = pd.concat([(df['high']-df['low']).abs(),
-                                (df['high']-prev).abs(),
-                                (df['low']-prev).abs()], axis=1).max(axis=1)
+                tr = pd.concat(
+                    [
+                        (df['high'] - df['low']).abs(),
+                        (df['high'] - prev).abs(),
+                        (df['low'] - prev).abs(),
+                    ],
+                    axis=1,
+                ).max(axis=1)
+
                 atr = float(tr.tail(14).mean())
-                cushion = max(50.0, 2 * atr * math.sqrt(max(seconds, 0)/60))
+                cushion = max(
+                    50.0,
+                    2 * atr * math.sqrt(max(seconds, 0) / 60),
+                )
+
                 if abs(distance) < cushion:
-                    st.warning('FLIP RISK · BTC is inside the volatility-adjusted '
-                               'target cushion. Treat either direction cautiously.')
+                    st.warning(
+                        'FLIP RISK · BTC is inside the volatility-adjusted '
+                        'target cushion. Treat either direction cautiously.'
+                    )
+
             except (KeyError, ValueError, TypeError, OverflowError):
                 pass
-        with st.expander('Signal diagnostics · paper only', expanded=False):
-            st.write({'status': status, 'side': side, 'trend': trend,
-                      'candle_source': feed_name, 'selected_candle_age_seconds': result.get('candle_age'), 'feed_errors_other_sources': feed_errors,
-                      'reasons': result.get('reasons', [])})
+
+        with st.expander(
+            'Signal diagnostics · paper only',
+            expanded=False,
+        ):
+            st.write({
+                'status': status,
+                'side': side,
+                'trend': trend,
+                'candle_source': feed_name,
+                'selected_candle_age_seconds': result.get('candle_age'),
+                'feed_errors_other_sources': feed_errors,
+                'reasons': result.get('reasons', []),
+            })
+
     except Exception as exc:
-        st.warning('WAIT · Guidance unavailable; no signal issued.')
-        with st.expander('Guidance diagnostics', expanded=False):
+        st.warning(
+            'WAIT · Guidance unavailable; no signal issued.'
+        )
+        with st.expander(
+            'Guidance diagnostics',
+            expanded=False,
+        ):
             st.code(str(exc))
 
 
@@ -869,7 +975,9 @@ def scan_status(kind, message, reasons=None):
     )
 
     if kind == 'ERROR':
-        st.error('Paper scanner paused · open diagnostics for details.')
+        st.error(
+            'Paper scanner paused · open diagnostics for details.'
+        )
     elif kind == 'ENTRY':
         st.success(message)
     else:
@@ -888,9 +996,18 @@ def scan_status(kind, message, reasons=None):
             'Last scan CT:',
             now_utc().astimezone(CT).strftime('%m/%d %H:%M:%S'),
         )
-        st.write('Scans this session:', health['scans'])
-        st.write('Scan results:', health['counts'])
-        st.write('Last message:', health.get('message'))
+        st.write(
+            'Scans this session:',
+            health['scans'],
+        )
+        st.write(
+            'Scan results:',
+            health['counts'],
+        )
+        st.write(
+            'Last message:',
+            health.get('message'),
+        )
 
         st.dataframe(
             [
@@ -906,8 +1023,6 @@ def scan_status(kind, message, reasons=None):
             hide_index=True,
             use_container_width=True,
         )
-
-
 def paper_history(rows):
     with st.expander(
         'V4 paper history · compare the same entries',
@@ -952,9 +1067,15 @@ def paper_history(rows):
                         if final
                         else 'PENDING'
                     ),
-                    'Shadow 70¢ net $': (entry_shadow.get(70) or {}).get('estimated_pnl'),
-                    'Shadow 75¢ net $': (entry_shadow.get(75) or {}).get('estimated_pnl'),
-                    'Shadow 80¢ net $': (entry_shadow.get(80) or {}).get('estimated_pnl'),
+                    'Shadow 70¢ net $': (
+                        entry_shadow.get(70) or {}
+                    ).get('estimated_pnl'),
+                    'Shadow 75¢ net $': (
+                        entry_shadow.get(75) or {}
+                    ).get('estimated_pnl'),
+                    'Shadow 80¢ net $': (
+                        entry_shadow.get(80) or {}
+                    ).get('estimated_pnl'),
                     'Exit': (
                         final['exit_reason']
                         if final
@@ -973,106 +1094,248 @@ def paper_history(rows):
 
         st.caption(
             'Latest 200 entries shown. Shadow columns are hypothetical exits, '
-        'not filled trades. Older events remain stored. '
+            'not filled trades. Older events remain stored. '
             'Only forward observations are entered; chart arrows '
             'are never backfilled. Fills and fees are estimates. '
             'V4 is separate from Early, Locked, WATCH and V2 history.'
         )
 
 
-def near_miss_observe(store, market, result, quote_at, trade_time, multiplier):
+def near_miss_observe(
+    store, market, result, quote_at, trade_time, multiplier
+):
     """Save one qualifying-price rejected setup per market/side, paper only."""
-    if result.get('status') != 'FILTERED' or not snapshot_current(quote_at, trade_time):
+
+    if (
+        result.get('status') != 'FILTERED'
+        or not snapshot_current(quote_at, trade_time)
+    ):
         return
+
     side = result.get('side')
-    if side not in ('ABOVE', 'BELOW') or result.get('candle_age') is None:
+
+    if (
+        side not in ('ABOVE', 'BELOW')
+        or result.get('candle_age') is None
+    ):
         return
+
     if not -3 <= result['candle_age'] <= 90:
         return
-    ask, bid = quote(market, side, 'ask'), quote(market, side, 'bid')
-    if ask is None or bid is None or not (MIN_ASK <= ask <= MAX_ASK):
+
+    ask = quote(market, side, 'ask')
+    bid = quote(market, side, 'bid')
+
+    if (
+        ask is None
+        or bid is None
+        or not (MIN_ASK <= ask <= MAX_ASK)
+    ):
         return
-    if not (0 < bid <= ask < 1 and ask - bid <= 0.030001):
+
+    if not (
+        0 < bid <= ask < 1
+        and ask - bid <= 0.030001
+    ):
         return
+
     price = cents_round(ask + SLIPPAGE)
     qty, estimated_fee, risk = size_for(price, multiplier)
-    if qty < 1 or available(market, side, 'ask') is None or available(market, side, 'ask') < qty:
+
+    size = available(market, side, 'ask')
+
+    if qty < 1 or size is None or size < qty:
         return
+
     ticker = str(market.get('ticker') or '')
     close = utc(market.get('close_time'))
+
     if not ticker.startswith('KXBTC15M-') or close is None:
         return
-    key = f'{int(close.timestamp()*1000)}_{ticker}_{side}.json'
+
+    key = (
+        f'{int(close.timestamp() * 1000)}_'
+        f'{ticker}_{side}.json'
+    )
+
     event = {
-        'ticker': ticker, 'side': side, 'observed_at': now_utc().isoformat(),
-        'close_ts': close.timestamp(), 'ask': ask, 'price': price,
-        'qty': qty, 'risk': risk, 'fee': estimated_fee,
+        'ticker': ticker,
+        'side': side,
+        'observed_at': now_utc().isoformat(),
+        'close_ts': close.timestamp(),
+        'ask': ask,
+        'price': price,
+        'qty': qty,
+        'risk': risk,
+        'fee': estimated_fee,
         'target': number(market.get('floor_strike')),
-        'distance': result.get('distance'), 'rsi': result.get('rsi'),
+        'distance': result.get('distance'),
+        'rsi': result.get('rsi'),
         'ema_trend': result.get('ema_trend'),
         'candle_age': result.get('candle_age'),
         'reasons': list(result.get('reasons') or []),
-        'note': 'Rejected observation, not a paper BUY or actual order',
+        'note': (
+            'Rejected observation, not a paper BUY or actual order'
+        ),
     }
+
     store.once('near_misses', key, event)
 
 
 def near_miss_report(store):
-    """Grade saved rejected observations using official Kalshi settlements."""
-    with st.expander('👑 Near Miss Tracker · rejected setups', expanded=False):
-        st.caption('One price-eligible rejected observation per contract and side. '
-                   'Never counted as a paper BUY. Only official settlement grades results.')
-        items = store.request('POST', '/object/list/' + BUCKET, {
-            'prefix': 'near_misses', 'limit': 100, 'offset': 0,
-            'sortBy': {'column': 'name', 'order': 'desc'},
-        })
+    """Grade rejected observations using official Kalshi settlements."""
+
+    with st.expander(
+        '👑 Near Miss Tracker · rejected setups',
+        expanded=False,
+    ):
+        st.caption(
+            'One price-eligible rejected observation per contract and side. '
+            'Never counted as a paper BUY. '
+            'Only official settlement grades results.'
+        )
+        items = store.request(
+            'POST',
+            '/object/list/' + BUCKET,
+            {
+                'prefix': 'near_misses',
+                'limit': 100,
+                'offset': 0,
+                'sortBy': {
+                    'column': 'name',
+                    'order': 'desc',
+                },
+            },
+        )
+
         if not isinstance(items, list):
             st.caption('Near-miss history unavailable.')
             return
+
         output = []
         checks = 0
+
         for item in items:
             key = str(item.get('name') or '')
+
             if not key.endswith('.json'):
                 continue
+
             event = store.get('near_misses', key)
+
             if not isinstance(event, dict):
                 continue
+
             outcome = store.get('near_miss_finals', key)
-            if not outcome and now_utc().timestamp() > float(event.get('close_ts') or 0) + 60 and checks < 3:
+
+            if (
+                not outcome
+                and now_utc().timestamp()
+                > float(event.get('close_ts') or 0) + 60
+                and checks < 3
+            ):
                 checks += 1
+
                 try:
-                    settled = public_get('/markets/' + event['ticker'])['market']
+                    settled = public_get(
+                        '/markets/' + event['ticker']
+                    )['market']
+
                     result = settled.get('result')
-                    if settled.get('status') in ('settled', 'finalized') and result in ('yes', 'no'):
-                        win = (event['side'] == 'ABOVE') == (result == 'yes')
-                        outcome = store.once('near_miss_finals', key, {
-                            'result': result, 'win': win,
-                            'hypothetical_pnl': round((event['qty'] if win else 0) - event['risk'], 6),
-                            'graded_at': now_utc().isoformat(),
-                        })
-                except (requests.RequestException, ValueError, KeyError, TypeError):
+
+                    if (
+                        settled.get('status')
+                        in ('settled', 'finalized')
+                        and result in ('yes', 'no')
+                    ):
+                        win = (
+                            (event['side'] == 'ABOVE')
+                            == (result == 'yes')
+                        )
+
+                        outcome = store.once(
+                            'near_miss_finals',
+                            key,
+                            {
+                                'result': result,
+                                'win': win,
+                                'hypothetical_pnl': round(
+                                    (
+                                        event['qty']
+                                        if win else 0
+                                    ) - event['risk'],
+                                    6,
+                                ),
+                                'graded_at': now_utc().isoformat(),
+                            },
+                        )
+
+                except (
+                    requests.RequestException,
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                ):
                     pass
-            output.append({
-                'Observed CT': (utc(event.get('observed_at')).astimezone(CT).strftime('%m/%d %H:%M:%S')
-                                if utc(event.get('observed_at')) else '—'),
-                'Ticker': event.get('ticker'), 'Side': event.get('side'),
-                'Ask ¢': round(float(event.get('ask') or 0)*100, 1),
-                'Why skipped': '; '.join(event.get('reasons') or []),
-                'Outcome': ('WIN' if outcome.get('win') else 'LOSS') if outcome else 'PENDING',
-                'Hypothetical net $': outcome.get('hypothetical_pnl') if outcome else None,
-            })
+
+            observed = utc(event.get('observed_at'))
+
+            output.append(
+                {
+                    'Observed CT': (
+                        observed.astimezone(CT).strftime(
+                            '%m/%d %H:%M:%S'
+                        )
+                        if observed else '—'
+                    ),
+                    'Ticker': event.get('ticker'),
+                    'Side': event.get('side'),
+                    'Ask ¢': round(
+                        float(event.get('ask') or 0) * 100,
+                        1,
+                    ),
+                    'Why skipped': '; '.join(
+                        event.get('reasons') or []
+                    ),
+                    'Outcome': (
+                        'WIN' if outcome.get('win') else 'LOSS'
+                    ) if outcome else 'PENDING',
+                    'Hypothetical net $': (
+                        outcome.get('hypothetical_pnl')
+                        if outcome else None
+                    ),
+                }
+            )
+
         if output:
-            st.dataframe(output, hide_index=True, use_container_width=True)
-            graded = [x for x in output if x['Outcome'] != 'PENDING']
+            st.dataframe(
+                output,
+                hide_index=True,
+                use_container_width=True,
+            )
+
+            graded = [
+                item for item in output
+                if item['Outcome'] != 'PENDING'
+            ]
+
             if graded:
-                st.caption(f"Graded near misses: {len(graded)}; hypothetical wins: "
-                           f"{sum(x['Outcome']=='WIN' for x in graded)}. "
-                           'Not actual fills, and selected observations are not independent.')
+                wins = sum(
+                    item['Outcome'] == 'WIN'
+                    for item in graded
+                )
+
+                st.caption(
+                    f'Graded near misses: {len(graded)}; '
+                    f'hypothetical wins: {wins}. '
+                    'Not actual fills, and selected observations '
+                    'are not independent.'
+                )
+
         else:
-            st.caption('No price-eligible rejected setups recorded yet.')
-
-
+            st.caption(
+                'No price-eligible rejected setups recorded yet.'
+            )
 def evaluate_papers(
     store,
     rows,
@@ -1185,29 +1448,61 @@ def evaluate_papers(
         entry = row['entry']
         bid = quote(fresh_market, entry['side'], 'bid')
         depth = available(fresh_market, entry['side'], 'bid')
+
         if bid is None or depth is None or depth < entry['qty']:
             continue
+
         if not snapshot_current(quote_at, trade_time):
-            raise RuntimeError('Shadow quote aged before observation')
+            raise RuntimeError(
+                'Shadow quote aged before observation'
+            )
+
         shadow = row.setdefault('shadow', {})
+
         for threshold in SHADOW_TARGETS:
             key = int(threshold * 100)
+
             if shadow.get(key) is not None or bid < threshold:
                 continue
-            # Bid is an observed executable-side quote, not a guaranteed fill.
-            estimated_price = max(0.0, cents_round(bid - SLIPPAGE, False))
-            estimated_fee = fee(entry['qty'], estimated_price, entry['fee_multiplier'])
+
+            estimated_price = max(
+                0.0,
+                cents_round(bid - SLIPPAGE, False),
+            )
+
+            estimated_fee = fee(
+                entry['qty'],
+                estimated_price,
+                entry['fee_multiplier'],
+            )
+
             event = {
                 'target_cents': key,
                 'observed_bid': bid,
                 'estimated_exit_price': estimated_price,
                 'estimated_exit_fee': estimated_fee,
-                'estimated_pnl': round(entry['qty'] * estimated_price - estimated_fee - entry['risk'], 6),
+                'estimated_pnl': round(
+                    entry['qty'] * estimated_price
+                    - estimated_fee
+                    - entry['risk'],
+                    6,
+                ),
                 'observed_at': now_utc().isoformat(),
-                'note': 'Observed bid/depth; simulated exit only, not an actual fill',
+                'note': (
+                    'Observed bid/depth; simulated exit only, '
+                    'not an actual fill'
+                ),
             }
-            event_key = row['key'][:-5] + f'_{key}.json'
-            shadow[key] = store.once('shadow', event_key, event)
+
+            event_key = (
+                row['key'][:-5] + f'_{key}.json'
+            )
+
+            shadow[key] = store.once(
+                'shadow',
+                event_key,
+                event,
+            )
 
     file_key = (
         str(int(close.timestamp() * 1000))
@@ -1238,10 +1533,9 @@ def evaluate_papers(
 
         return (
             'WINDOW',
-            'WAIT · Outside 10–3 minute entry window.',
+            'WAIT · Outside the 10–3 minute paper entry window.',
             ['Outside 10–3 minute entry window'],
         )
-
     if daily_pnl(rows) <= -DAILY_STOP:
         return (
             'LIMIT',
@@ -1285,7 +1579,15 @@ def evaluate_papers(
         )
 
         if enabled and df is not None and result.get('status') == 'FILTERED':
-            near_miss_observe(store, fresh_market, result, quote_at, trade_time, multiplier)
+            near_miss_observe(
+                store,
+                fresh_market,
+                result,
+                quote_at,
+                trade_time,
+                multiplier,
+            )
+
         return kind, 'WAIT · ' + '; '.join(reasons), reasons
 
     stamp = now_utc().timestamp()
@@ -1376,8 +1678,6 @@ def evaluate_papers(
         f"· risk ${saved['risk']:.2f}. No order was sent.",
         [],
     )
-
-
 def _run_paper_engine(
     market,
     strike,
@@ -1440,7 +1740,10 @@ def _run_paper_engine(
 
         message = 'PAPER DATA / STORAGE ISSUE · ' + str(exc)
 
-        st.caption('Scan paused. Existing saved history is not deleted; verify interrupted saves before retrying.')
+        st.caption(
+            'Scan paused. Existing saved history is not deleted; '
+            'verify interrupted saves before retrying.'
+        )
 
         scan_status('ERROR', message, [message])
 
@@ -1452,10 +1755,14 @@ def _run_paper_engine(
             )
 
         paper_history(rows)
+
         try:
             near_miss_report(store)
-        except Exception as exc:
-            st.caption('Near-miss reporting unavailable; existing paper scanner unchanged.')
+        except Exception:
+            st.caption(
+                'Near-miss reporting unavailable; '
+                'existing paper scanner unchanged.'
+            )
 
     st.caption(
         'Actual paper strategy holds until official settlement. '
@@ -1470,21 +1777,33 @@ def render_paper_engine(*args, **kwargs):
     # Guidance stays visible above the preserved live chart.
     # Read-only journal access; any storage problem fails closed.
     rows = []
+
     try:
         url = st.secrets.get('SUPABASE_URL')
         key = st.secrets.get('SUPABASE_SERVICE_ROLE_KEY')
+
         if url and key:
-            rows = journal(str(url), str(key)).rows()
+            rows = journal(
+                str(url),
+                str(key),
+            ).rows()
+
     except Exception:
         pass
-    guidance_panel(args[0] if len(args) > 0 else kwargs.get('market'),
-                   args[4] if len(args) > 4 else kwargs.get('verified', False),
-                   args[5] if len(args) > 5 else kwargs.get('quote_fn'),
-                   args[6] if len(args) > 6 else kwargs.get('candle_fn'), rows)
-    with st.expander('🧪 Paper test · controls, P&L & history', expanded=False):
+
+    guidance_panel(
+        args[0] if len(args) > 0 else kwargs.get('market'),
+        args[4] if len(args) > 4 else kwargs.get('verified', False),
+        args[5] if len(args) > 5 else kwargs.get('quote_fn'),
+        args[6] if len(args) > 6 else kwargs.get('candle_fn'),
+        rows,
+    )
+
+    with st.expander(
+        '🧪 Paper test · controls, P&L & history',
+        expanded=False,
+    ):
         _run_paper_engine(*args, **kwargs)
-
-
 def compact_chart_html(html):
     """Reset old Advanced Mode preferences on startup."""
     html = html.replace(
@@ -1574,8 +1893,6 @@ requestResize();
         )
 
     return html
-
-
 def clean_chart_renderer(path):
     """Apply compact defaults without overwriting the chart module."""
     tree = ast.parse(
@@ -1676,8 +1993,6 @@ def expander_node(nodes, label):
     wrapper.end_lineno = nodes[-1].end_lineno
     wrapper.end_col_offset = nodes[-1].end_col_offset
     return wrapper
-
-
 def compact_original(source):
     """Collapse display sections while preserving their execution."""
     tree = ast.parse(source)
@@ -1788,8 +2103,6 @@ def compact_original(source):
     ]
 
     return ast.fix_missing_locations(tree)
-
-
 def qe_simple_status(market, errors, quote_fn, candle_fn, verified):
     """Conservative summary; no new strategy or order logic."""
     ticker = str((market or {}).get('ticker') or '')
@@ -1830,10 +2143,10 @@ def qe_stage_row(market, errors, verified, early, locked):
     stamp = st.session_state.get('last_good_times', {}).get('KXBTC15M')
     fresh = bool(market and not errors and stamp is not None and
                  0 <= _time.time() - stamp <= 15)
-    yes_bid = quote(market, 'yes', 'bid') if market else None
-    yes_ask = quote(market, 'yes', 'ask') if market else None
-    no_bid = quote(market, 'no', 'bid') if market else None
-    no_ask = quote(market, 'no', 'ask') if market else None
+    yes_bid = quote(market, 'ABOVE', 'bid') if market else None
+    yes_ask = quote(market, 'ABOVE', 'ask') if market else None
+    no_bid = quote(market, 'BELOW', 'bid') if market else None
+    no_ask = quote(market, 'BELOW', 'ask') if market else None
     quotes_ok = (fresh and verified and all(
         v is not None and 0 <= v <= 1
         for v in (yes_bid, yes_ask, no_bid, no_ask))
@@ -1883,8 +2196,6 @@ def qe_stage_row(market, errors, verified, early, locked):
         card('🔒 LOCK', lock_value, lock_note)
     st.caption('MID is a provisional Kalshi quote lean, not a saved prediction. '
                'EARLY and LOCK reflect existing recorded paper calls.')
-
-
 def qe_simple_header(market, errors, quote_fn, candle_fn, verified, early=None, locked=None):
     """Only essentials above the chart; other tools stay collapsible."""
     qe_stage_row(market, errors, verified, early, locked)
@@ -1907,8 +2218,6 @@ def qe_simple_header(market, errors, quote_fn, candle_fn, verified, early=None, 
     c, d = st.columns(2)
     c.metric('🟢 ABOVE · ASK', f'{yes*100:.1f}¢' if yes is not None else '—')
     d.metric('🔴 BELOW · ASK', f'{no*100:.1f}¢' if no is not None else '—')
-
-
 def launch():
     original = (
         Path(__file__).resolve().parent / 'queens_original.py'
@@ -1989,7 +2298,7 @@ def launch():
             'qe_seconds, verified_direction(market) if market else False, '
             'quote, btc_candles, bool(errors.get(series)))\n'
             '    with qe_chart_slot:\n'
-        '        st.markdown("#### 📈 LIVE BITCOIN · STREAMING CHART")\n'
+            '        st.markdown("#### 📈 LIVE BITCOIN · STREAMING CHART")\n'
             '        render_live_chart(strike, close_time=qe_close, '
             'market_ticker=market.get("ticker") if market else None)\n'
             '    with st.expander("📉 Original historical chart · Backup", '
@@ -2042,3 +2351,19 @@ def launch():
 
 if __name__ == '__main__':
     launch()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
