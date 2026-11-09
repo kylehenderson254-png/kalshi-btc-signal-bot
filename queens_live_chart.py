@@ -1,6 +1,7 @@
-"""QUEEN'S EDGE | 254 — streaming BTC chart.
 
-PAPER ONLY. This module never places orders or changes tracker history.
+"""QUEEN'S EDGE | 254 — compact live BTC chart.
+
+PAPER ONLY. No orders or changes to saved paper results.
 Coinbase BTC/USD is indicative, not Kalshi settlement data.
 """
 
@@ -14,1884 +15,587 @@ import streamlit.components.v1 as components
 def render_live_chart(
     target=None, height=510, *, close_time=None, market_ticker=None
 ):
-    """Optional close_time must be the official contract close."""
-
     try:
-        strike = float(target) if target is not None else None
-
-        if strike is not None:
-            if not math.isfinite(strike) or strike <= 0:
-                strike = None
-
+        strike = float(target)
+        if not math.isfinite(strike) or strike <= 0:
+            strike = None
     except (TypeError, ValueError, OverflowError):
         strike = None
 
     close_ms = None
-
     try:
         if isinstance(close_time, (int, float)):
             close_ms = float(close_time)
-
             if close_ms < 1_000_000_000_000:
                 close_ms *= 1000
-
         elif close_time is not None:
             dt = close_time
-
             if isinstance(dt, str):
                 dt = datetime.fromisoformat(
                     dt.replace("Z", "+00:00")
                 )
-
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
-
             close_ms = dt.timestamp() * 1000
-
-        if close_ms is not None:
-            if not math.isfinite(close_ms):
-                close_ms = None
-
-    except (
-        TypeError,
-        ValueError,
-        OverflowError,
-        AttributeError,
-        OSError,
-    ):
+        if close_ms is not None and not math.isfinite(close_ms):
+            close_ms = None
+    except (TypeError, ValueError, OverflowError, AttributeError):
         close_ms = None
 
-    config = json.dumps(
-        {
-            "target": strike,
-            "closeMs": close_ms,
-            "ticker": str(market_ticker or ""),
-        },
-        allow_nan=False,
-    ).replace("<", "\\u003c")
+    config = json.dumps({
+        "target": strike,
+        "closeMs": close_ms,
+        "ticker": str(market_ticker or "")
+    }, allow_nan=False).replace("<", "\\u003c")
 
-    html = r'''<!doctype html>
+    html = r"""
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-
 <style>
 *{box-sizing:border-box}
-
 html,body{
- margin:0;
- padding:0;
- background:#0b091b;
- color:#eee5ff;
- font:12px system-ui,Segoe UI,Arial,sans-serif;
- overflow-x:hidden;
+ margin:0;padding:0;background:#0b091b;color:#eee5ff;
+ font:13px system-ui,Arial,sans-serif;overflow-x:hidden
 }
-
 #summary{
- display:grid;
- grid-template-columns:repeat(7,minmax(0,1fr));
- gap:7px;
- padding:8px;
- background:#160f2c;
- border:1px solid #654098;
- border-radius:12px;
+ display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+ gap:7px;margin-bottom:8px
 }
-
 .tile{
- min-width:0;
- background:#23163c;
- border-radius:8px;
- padding:8px;
+ background:#211537;border:1px solid #49316d;
+ border-radius:9px;padding:9px;min-width:0
 }
-
-.muted{
- color:#b9a5d4;
- font-size:11px;
+.label{font-size:11px;color:#bda8d9}
+.value{font-size:17px;font-weight:800;margin-top:3px;overflow-wrap:anywhere}
+#toolbar{
+ display:flex;flex-wrap:wrap;align-items:center;
+ gap:7px;margin:7px 0
 }
-
-.value{
- font-size:15px;
- font-weight:750;
- margin-top:4px;
- overflow-wrap:anywhere;
+button,select{
+ background:#271941;color:#f2e8ff;border:1px solid #65428e;
+ border-radius:8px;padding:7px 10px;font:600 12px system-ui
 }
-
-#toolbar,#extras,#legend{
- display:flex;
- gap:8px;
- align-items:center;
- flex-wrap:wrap;
- margin:8px 0;
+button{cursor:pointer}
+button.active{background:#62419a;border-color:#b18aff}
+button:focus-visible,select:focus-visible{
+ outline:2px solid #d6b5ff
 }
-
-button{
- cursor:pointer;
- background:#25183d;
- color:#eee5ff;
- border:1px solid #654098;
- border-radius:8px;
- padding:7px 11px;
- font:600 11px system-ui;
+#main{
+ height:340px;border:1px solid #553878;
+ border-radius:10px;overflow:hidden
 }
-
-button.active{
- background:#55318c;
- border-color:#a77aff;
+#rsiPanel{
+ display:none;height:100px;margin-top:6px;
+ border:1px solid #553878;border-radius:9px;overflow:hidden
 }
-
-button:focus-visible,
-a:focus-visible,
-input:focus-visible{
- outline:2px solid #d4b5ff;
- outline-offset:2px;
-}
-
-#extras{display:none}
-
-label{
- cursor:pointer;
- background:#24183d;
- border:1px solid #543779;
- border-radius:7px;
- padding:5px 7px;
- white-space:nowrap;
-}
-
-input{accent-color:#b77dff}
-
-.panel{
- border:1px solid #513478;
- border-radius:10px;
- overflow:hidden;
- margin-bottom:7px;
- position:relative;
-}
-
-.panelTitle{
- position:absolute;
- top:6px;
- left:8px;
- z-index:2;
- background:#110d22db;
- border-radius:4px;
- padding:3px 7px;
- color:#d9c5ff;
- pointer-events:none;
- font-size:10px;
-}
-
-#main{height:355px}
-#volume{height:78px}
-#rsi,#macd{height:105px}
-.optionalPanel{display:none}
-
-#legend{
- font-size:11px;
- color:#cbb5e8;
-}
-
 #notice{
- padding:9px 10px;
- border:1px solid #694b84;
- border-radius:8px;
- color:#ffcb83;
- background:#1d1430;
- line-height:1.45;
- font-weight:650;
+ margin-top:7px;padding:9px 11px;
+ background:#211537;border:1px solid #614183;
+ border-radius:8px;font-weight:700;color:#ffcb83
 }
-
-#help{
- color:#bda9d5;
- line-height:1.5;
- padding:7px 2px 3px;
- font-size:10px;
+#legend{
+ display:flex;flex-wrap:wrap;gap:13px;
+ color:#d6c4ed;font-size:11px;margin:8px 2px
 }
-
-#help a{color:#cba7ff}
-#contract{margin-left:auto}
-
-@media(max-width:900px){
- #summary{
-  grid-template-columns:repeat(4,minmax(0,1fr));
- }
-}
-
-@media(max-width:520px){
- #summary{
-  grid-template-columns:repeat(2,minmax(0,1fr));
- }
-
- #main{height:320px}
- #contract{margin-left:0}
+#foot{font-size:10px;color:#b9a5d4;line-height:1.5}
+#foot a{color:#d5b5ff}
+@media(max-width:650px){
+ #summary{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .value{font-size:15px}
+ #main{height:310px}
 }
 </style>
 </head>
-
 <body>
 
 <div id="summary">
- <div class="tile">
-  <div class="muted">BTC/USD · Coinbase</div>
-  <div class="value" id="price">Connecting…</div>
- </div>
-
- <div class="tile">
-  <div class="muted">Kalshi target · snapshot</div>
-  <div class="value" id="target">—</div>
- </div>
-
- <div class="tile">
-  <div class="muted">Distance to target</div>
-  <div class="value" id="distance">—</div>
- </div>
-
- <div class="tile">
-  <div class="muted">EMA 9 / EMA 21</div>
-  <div class="value" id="trend">Collecting…</div>
- </div>
-
- <div class="tile">
-  <div class="muted">RSI 14 · 1 minute</div>
-  <div class="value" id="rsiValue">—</div>
- </div>
-
- <div class="tile">
-  <div class="muted">Spot change · 20s</div>
-  <div class="value" id="momentum">Collecting…</div>
- </div>
-
- <div class="tile">
-  <div class="muted">Feed / trade age</div>
-  <div class="value" id="status">Connecting…</div>
- </div>
+ <div class="tile"><div class="label">BTC / USD · LIVE</div>
+  <div class="value" id="price">Connecting…</div></div>
+ <div class="tile"><div class="label">KALSHI TARGET</div>
+  <div class="value" id="target">—</div></div>
+ <div class="tile"><div class="label">DISTANCE</div>
+  <div class="value" id="distance">—</div></div>
+ <div class="tile"><div class="label">EMA 9 / 21</div>
+  <div class="value" id="trend">WAIT</div></div>
 </div>
 
 <div id="toolbar">
- <button id="clean" class="active">✓ CLEAN MODE</button>
- <button id="advanced">ADVANCED MODE</button>
-
- <button id="resetView"
-         title="Follow the latest 60 candles">
-  FOLLOW LIVE
- </button>
-
- <span class="muted" id="modeDescription">
-  EMA 9/21 · target · reversal arrows
- </span>
-
- <span class="muted" id="contract"></span>
+ <button id="follow" class="active">✓ FOLLOW LIVE</button>
+ <select id="range" aria-label="Chart time range">
+  <option value="30">30 MIN</option>
+  <option value="60" selected>1 HOUR</option>
+  <option value="120">2 HOURS</option>
+  <option value="240">4 HOURS</option>
+ </select>
+ <button id="rsiButton">SHOW RSI</button>
+ <button id="reset">RESET VIEW</button>
+ <span id="feed" class="label">Connecting…</span>
 </div>
 
-<div id="extras">
- <label>
-  <input type="checkbox" data-key="volume"> Volume
- </label>
-
- <label>
-  <input type="checkbox" data-key="rsi"> RSI (14)
- </label>
-
- <label>
-  <input type="checkbox" data-key="macd"> MACD
- </label>
-
- <label>
-  <input type="checkbox" data-key="ema50"> EMA 50
- </label>
-
- <label>
-  <input type="checkbox" data-key="vwap"> VWAP*
- </label>
-
- <label>
-  <input type="checkbox" data-key="bb"> Bollinger
- </label>
-
- <label>
-  <input type="checkbox" data-key="levels">
-  Support / resistance
- </label>
-
- <label>
-  <input type="checkbox" data-key="markers" checked>
-  Reversal arrows
- </label>
-</div>
-
-<div class="panel">
- <div class="panelTitle">
-  BTC · 1-minute candles / Kalshi target snapshot
- </div>
- <div id="main"></div>
-</div>
-
-<div class="panel optionalPanel" id="volumePanel">
- <div class="panelTitle">
-  Coinbase volume · may be incomplete after feed gaps
- </div>
- <div id="volume"></div>
-</div>
-
-<div class="panel optionalPanel" id="rsiPanel">
- <div class="panelTitle">
-  RSI 14 · 30 / 50 / 70
- </div>
- <div id="rsi"></div>
-</div>
-
-<div class="panel optionalPanel" id="macdPanel">
- <div class="panelTitle">
-  MACD 12 / 26 / 9
- </div>
- <div id="macd"></div>
-</div>
+<div id="main"></div>
+<div id="rsiPanel"></div>
 
 <div id="legend">
  <span>🟣 EMA 9</span>
  <span>🔵 EMA 21</span>
- <span>🟡 Target snapshot</span>
+ <span>🟡 Kalshi target</span>
  <span style="color:#75f2be">▲ WATCH UP</span>
  <span style="color:#ff91a9">▼ WATCH DOWN</span>
 </div>
 
-<div id="notice" role="status" aria-live="polite">
- WAIT · Connecting to live trades.
-</div>
-
-<div id="help">
- PAPER ONLY. Warnings are experimental observations,
- not BUY/SELL or settlement-lock confirmations.
- WATCH labels mark EMA-slope turns with RSI and MACD confirmation.
- Historical labels are retrospective chart-pattern matches,
- not records of live alerts. The current candle can change.
- Target and optional expiry come from the dashboard;
- this chart does not fetch a new Kalshi contract.
- Coinbase spot is not Kalshi settlement data.
- *VWAP uses the loaded portion of the UTC day.
- <a href="https://www.tradingview.com/"
-    target="_blank"
-    rel="noopener noreferrer">TradingView Lightweight Charts™</a>
+<div id="notice" role="status">WAIT · Loading candles.</div>
+<div id="foot">
+ PAPER ONLY · Experimental momentum warnings, not guaranteed entries
+ or settlement predictions. Coinbase spot is not Kalshi settlement data.
+ Historical arrows are retrospective pattern matches.
+ <a href="https://www.tradingview.com/" target="_blank"
+ rel="noopener noreferrer">TradingView Lightweight Charts™</a>
  · Copyright © TradingView, Inc.
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
-
 <script>
 const CONFIG=__CONFIG__;
-const TARGET=CONFIG.target;
-
 const $=id=>document.getElementById(id);
+const green='#75f2be',red='#ff91a9',amber='#ffcb83';
+const fmt=n=>Number.isFinite(n)
+ ?n.toLocaleString('en-US',{
+   style:'currency',currency:'USD',
+   minimumFractionDigits:2,maximumFractionDigits:2
+ }):'—';
 
-const fmt=x=>Number.isFinite(x)
- ?x.toLocaleString('en-US',{
-   style:'currency',
-   currency:'USD',
-   minimumFractionDigits:2,
-   maximumFractionDigits:2
-  })
- :'—';
+let bars=[],socket=null,chart=null,candles=null;
+let ema9Line=null,ema21Line=null,targetLine=null;
+let rsiChart=null,rsiLine=null;
+let follow=true,zoom=60,rsiVisible=false;
+let ready=false,restoring=false,lastTrade=0;
+let reconnectTimer=null,lastMinute=0;
+let lastPrice=null;
 
-const green='#75f2be';
-const red='#ff91a9';
-const amber='#ffcb83';
-
-$('target').textContent=
- TARGET===null?'Unavailable':fmt(TARGET);
-
-const flags={
- volume:false,
- rsi:false,
- macd:false,
- ema50:false,
- vwap:false,
- bb:false,
- levels:false,
- markers:true
-};
-
-let advancedMode=false;
-let bars=[];
-let ticks=[];
-let charts=[];
-let series={};
-let socket=null;
-
-let lastTick=0;
-let lastEvent=0;
-let lastMessage=0;
-let lastTradeId=null;
-let retry=1000;
-let feed='WS';
-
-let calculationTimer=null;
-let reconnectTimer=null;
-let loading=false;
-let dead=false;
-
-let needsReset=true;
-let chartReady=false;
-let userAdjustedView=false;
-let restoringView=false;
-
-let historyError='';
-let cached=null;
-let markers=[];
-let renderedTime=0;
-
-const viewKey='queens-edge-254-btc-view-v4';
-const settingsKey='queens-edge-254-chart-settings-v1';
-
-let savedView=null;
-
+const storeKey='qe254-live-chart-v5';
 try{
- savedView=JSON.parse(
-  sessionStorage.getItem(viewKey)||'null'
- );
-
- const prefs=JSON.parse(
-  sessionStorage.getItem(settingsKey)||'null'
- );
-
- if(prefs){
-  advancedMode=prefs.advanced===true;
-
-  for(const k of Object.keys(flags)){
-   if(typeof prefs.flags?.[k]==='boolean'){
-    flags[k]=prefs.flags[k];
-   }
-  }
- }
+ const saved=JSON.parse(sessionStorage.getItem(storeKey)||'{}');
+ if([30,60,120,240].includes(saved.zoom))zoom=saved.zoom;
+ if(typeof saved.follow==='boolean')follow=saved.follow;
+ rsiVisible=saved.rsi===true;
 }catch(e){}
 
-if(
- savedView&&
- Number.isFinite(savedView.from)&&
- Number.isFinite(savedView.to)&&
- savedView.to>savedView.from
-){
- userAdjustedView=true;
-}else{
- savedView=null;
-}
-
-function saveSettings(){
+function save(){
  try{
-  sessionStorage.setItem(
-   settingsKey,
-   JSON.stringify({
-    advanced:advancedMode,
-    flags
-   })
-  );
+  sessionStorage.setItem(storeKey,JSON.stringify({
+   zoom,follow,rsi:rsiVisible
+  }));
  }catch(e){}
 }
 
-function resizeFrame(){
- try{
-  window.parent.postMessage({
-   isStreamlitMessage:true,
-   type:'streamlit:setFrameHeight',
-   height:Math.ceil(
-    document.documentElement.scrollHeight+4
-   )
-  },'*');
- }catch(e){}
+function setNotice(text,color=amber){
+ $('notice').textContent=text;
+ $('notice').style.color=color;
 }
 
-function requestResize(){
- requestAnimationFrame(
-  ()=>requestAnimationFrame(resizeFrame)
- );
+function setFollow(value){
+ follow=value;
+ $('follow').classList.toggle('active',follow);
+ $('follow').textContent=follow?'✓ FOLLOW LIVE':'FOLLOW PAUSED';
+ save();
 }
 
-function chartFor(id){
- const e=$(id);
-
- const chart=LightweightCharts.createChart(e,{
-  width:Math.max(1,e.clientWidth),
-  height:Math.max(1,e.clientHeight),
-
+function makeChart(element,height){
+ return LightweightCharts.createChart(element,{
+  width:Math.max(1,element.clientWidth),
+  height,
   layout:{
-   background:{color:'#0b091b'},
-   textColor:'#cbb8e6'
+   background:{color:'#0b091b'},textColor:'#d0bde8'
   },
-
   grid:{
    vertLines:{color:'#281e3c'},
    horzLines:{color:'#281e3c'}
   },
-
-  rightPriceScale:{
-   borderColor:'#513478'
-  },
-
+  rightPriceScale:{borderColor:'#513478'},
   timeScale:{
-   timeVisible:true,
-   secondsVisible:false,
-   borderColor:'#513478',
-   rightOffset:4
+   timeVisible:true,secondsVisible:false,
+   borderColor:'#513478',rightOffset:4,
+   shiftVisibleRangeOnNewBar:true
   },
-
-  crosshair:{
-   mode:LightweightCharts.CrosshairMode.Normal
-  }
+  crosshair:{mode:LightweightCharts.CrosshairMode.Normal}
  });
-
- new ResizeObserver(()=>{
-  if(e.clientWidth>0&&e.clientHeight>0){
-   chart.applyOptions({
-    width:e.clientWidth,
-    height:e.clientHeight
-   });
-  }
- }).observe(e);
-
- charts.push(chart);
- return chart;
-}
-
-function line(chart,color,width=1,style=0){
- return chart.addLineSeries({
-  color,
-  lineWidth:width,
-  lineStyle:style,
-  priceLineVisible:false,
-  lastValueVisible:false,
-  crosshairMarkerVisible:false
- });
-}
-
-function points(values){
- return bars.map((b,i)=>({
-  time:b.time,
-  value:values[i]
- })).filter(x=>Number.isFinite(x.value));
 }
 
 function ema(values,n){
  const out=Array(values.length).fill(null);
-
  if(values.length<n)return out;
-
- out[n-1]=values.slice(0,n)
-  .reduce((a,b)=>a+b,0)/n;
-
+ let current=values.slice(0,n).reduce((a,b)=>a+b,0)/n;
+ out[n-1]=current;
  const k=2/(n+1);
-
  for(let i=n;i<values.length;i++){
-  out[i]=out[i-1]+k*(values[i]-out[i-1]);
+  current+=(values[i]-current)*k;
+  out[i]=current;
  }
-
  return out;
 }
 
 function rsi(values,n=14){
  const out=Array(values.length).fill(null);
-
  if(values.length<=n)return out;
-
- let gain=0;
- let loss=0;
-
+ let gain=0,loss=0;
  for(let i=1;i<=n;i++){
   const d=values[i]-values[i-1];
-
   gain+=Math.max(0,d)/n;
   loss+=Math.max(0,-d)/n;
  }
-
- const value=()=>loss===0
-  ?(gain===0?50:100)
-  :100-100/(1+gain/loss);
-
- out[n]=value();
-
+ function score(){
+  return loss===0?(gain===0?50:100):100-100/(1+gain/loss);
+ }
+ out[n]=score();
  for(let i=n+1;i<values.length;i++){
   const d=values[i]-values[i-1];
-
   gain=(gain*(n-1)+Math.max(0,d))/n;
   loss=(loss*(n-1)+Math.max(0,-d))/n;
-
-  out[i]=value();
+  out[i]=score();
  }
-
  return out;
 }
 
-function macd(values){
- const fast=ema(values,12);
- const slow=ema(values,26);
+function visibleWidth(){
+ if(!chart)return zoom;
+ const range=chart.timeScale().getVisibleLogicalRange();
+ if(range&&Number.isFinite(range.to-range.from)){
+  return Math.max(15,Math.min(300,range.to-range.from));
+ }
+ return zoom;
+}
 
- const m=values.map((_,i)=>
-  fast[i]===null||slow[i]===null
-   ?null
-   :fast[i]-slow[i]
- );
+function moveToLive(width){
+ if(!chart||!bars.length)return;
+ restoring=true;
+ try{
+  const right=bars.length+3;
+  chart.timeScale().setVisibleLogicalRange({
+   from:right-width,to:right
+  });
+ }catch(e){}
+ restoring=false;
+}
 
- const signal=Array(values.length).fill(null);
- const hist=Array(values.length).fill(null);
+function render(){
+ if(!bars.length||!candles)return;
+ const width=visibleWidth();
+ const close=bars.map(b=>b.close);
+ const e9=ema(close,9),e21=ema(close,21);
+ const rv=rsi(close);
 
- const s=ema(
-  m.filter(Number.isFinite),
-  9
- );
+ const points=a=>a.map((v,i)=>({
+  time:bars[i].time,value:v
+ })).filter(p=>Number.isFinite(p.value));
 
- for(let i=0;i<s.length;i++){
-  if(s[i]!==null){
-   signal[i+25]=s[i];
-   hist[i+25]=m[i+25]-s[i];
+ const candleData=bars.map(b=>({
+  time:b.time,open:b.open,high:b.high,
+  low:b.low,close:b.close
+ }));
+
+ candles.setData(candleData);
+ ema9Line.setData(points(e9));
+ ema21Line.setData(points(e21));
+ rsiLine.setData(points(rv));
+
+ const markers=[];
+ for(let i=25;i<bars.length-1;i++){
+  if(bars[i].time-bars[i-2].time!==120)continue;
+  if(![e9[i],e9[i-1],e9[i-2],rv[i],rv[i-1]]
+     .every(Number.isFinite))continue;
+
+  const previous=e9[i-1]-e9[i-2];
+  const slope=e9[i]-e9[i-1];
+  const up=previous<=0&&slope>0&&
+   close[i]>close[i-1]&&rv[i]>rv[i-1]&&rv[i]>=50;
+  const down=previous>=0&&slope<0&&
+   close[i]<close[i-1]&&rv[i]<rv[i-1]&&rv[i]<=50;
+
+  if(up||down){
+   const last=markers.at(-1);
+   if(last&&bars[i].time-last.time<300)continue;
+   markers.push({
+    time:bars[i].time,
+    position:up?'belowBar':'aboveBar',
+    color:up?green:red,
+    shape:up?'arrowUp':'arrowDown',
+    text:up?'WATCH UP':'WATCH DOWN'
+   });
   }
  }
+ candles.setMarkers(markers);
 
- return {m,signal,hist};
-}
-
-function bollinger(values,n=20){
- const high=Array(values.length).fill(null);
- const low=Array(values.length).fill(null);
-
- for(let i=n-1;i<values.length;i++){
-  const a=values.slice(i-n+1,i+1);
-  const mean=a.reduce((x,y)=>x+y,0)/n;
-
-  const sd=Math.sqrt(
-   a.reduce((x,y)=>x+(y-mean)**2,0)/n
-  );
-
-  high[i]=mean+2*sd;
-  low[i]=mean-2*sd;
+ const i=bars.length-1;
+ const difference=e9[i]-e21[i];
+ if(Number.isFinite(difference)){
+  $('trend').textContent=difference>0?'▲ UP':
+   difference<0?'▼ DOWN':'NEUTRAL';
+  $('trend').style.color=difference>0?green:
+   difference<0?red:amber;
  }
 
- return {high,low};
-}
-
-function vwap(){
- const out=[];
-
- let day='';
- let pv=0;
- let vol=0;
-
- for(const b of bars){
-  const d=new Date(b.time*1000)
-   .toISOString().slice(0,10);
-
-  if(d!==day){
-   day=d;
-   pv=0;
-   vol=0;
-  }
-
-  const q=Math.max(0,b.volume||0);
-
-  pv+=(b.high+b.low+b.close)/3*q;
-  vol+=q;
-
-  out.push(vol?pv/vol:null);
+ if(!ready){
+  ready=true;
+  moveToLive(zoom);
+ }else if(follow){
+  moveToLive(width);
  }
-
- return out;
-}
-
-function levels(n=35){
- return {
-  low:bars.map((_,i)=>
-   i<n
-    ?null
-    :Math.min(
-      ...bars.slice(i-n,i).map(x=>x.low)
-     )
-  ),
-
-  high:bars.map((_,i)=>
-   i<n
-    ?null
-    :Math.max(
-      ...bars.slice(i-n,i).map(x=>x.high)
-     )
-  )
- };
-}
-
-function fresh(){
- const age=Date.now()-lastTick;
-
- return lastTick>0&&
-  age>=-3000&&
-  age<=10000;
-}
-
-function expired(){
- return CONFIG.closeMs!==null&&
-  Date.now()>=CONFIG.closeMs;
-}
-
-function recentGap(){
- return bars.slice(-60).some(
-  (b,i,a)=>i>0&&b.time-a[i-1].time>60
- );
-}
-
-function setStatus(text,color=amber){
- $('status').textContent=text;
- $('status').style.color=color;
+ updateNotice();
 }
 
 function updatePrice(price){
+ lastPrice=price;
  $('price').textContent=fmt(price);
-
- if(TARGET!==null){
-  const d=price-TARGET;
-
-  $('distance').textContent=
-   (d>=0?'+':'−')+fmt(Math.abs(d));
-
-  $('distance').style.color=
-   d>=0?green:red;
+ if(CONFIG.target!==null){
+  const d=price-CONFIG.target;
+  $('distance').textContent=(d>=0?'+':'−')+fmt(Math.abs(d));
+  $('distance').style.color=d>=0?green:red;
  }
-}
-
-function syncPanels(){
- $('clean').classList.toggle(
-  'active',
-  !advancedMode
- );
-
- $('advanced').classList.toggle(
-  'active',
-  advancedMode
- );
-
- $('extras').style.display=
-  advancedMode?'flex':'none';
-
- $('modeDescription').textContent=
-  advancedMode
-   ?'Choose your extra indicators'
-   :'EMA 9/21 · target · reversal arrows';
-
- const panels={
-  volume:'volumePanel',
-  rsi:'rsiPanel',
-  macd:'macdPanel'
- };
-
- for(const [key,id] of Object.entries(panels)){
-  $(id).style.display=
-   advancedMode&&flags[key]?'block':'none';
- }
-
- const groups={
-  ema50:['ema50'],
-  vwap:['vwap'],
-  bb:['bbHigh','bbLow'],
-  levels:['support','resistance']
- };
-
- for(const [key,names] of Object.entries(groups)){
-  for(const name of names){
-   series[name]?.applyOptions({
-    visible:advancedMode&&flags[key]
-   });
-  }
- }
-
- series.candles?.setMarkers(
-  flags.markers?markers:[]
- );
-
- document.querySelectorAll(
-  'input[data-key]'
- ).forEach(input=>{
-  input.checked=flags[input.dataset.key];
- });
-
- saveSettings();
- requestResize();
-}
-
-function detectReversals(close,e9,e21,rv,mc){
- const out=[];
-
- if(expired())return out;
-
- let lastUp=-1000;
- let lastDown=-1000;
-
- for(let i=52;i<bars.length;i++){
-  const values=[
-   close[i],
-   close[i-1],
-   e9[i],
-   e9[i-1],
-   e9[i-2],
-   rv[i],
-   rv[i-1],
-   mc.hist[i],
-   mc.hist[i-1]
-  ];
-
-  if(!values.every(Number.isFinite))continue;
-
-  if(bars[i].time-bars[i-2].time!==120)continue;
-  // Never label a reversal across a missing 1-minute candle.
-  if(i<59||bars[i].time-bars[i-59].time!==59*60)continue;
-
-  const slope=e9[i]-e9[i-1];
-  const previousSlope=e9[i-1]-e9[i-2];
-
-  const up=
-   previousSlope<=0&&
-   slope>0&&
-   close[i]>close[i-1]&&
-   rv[i]>rv[i-1]&&
-   mc.hist[i]>mc.hist[i-1];
-
-  const down=
-   previousSlope>=0&&
-   slope<0&&
-   close[i]<close[i-1]&&
-   rv[i]<rv[i-1]&&
-   mc.hist[i]<mc.hist[i-1];
-
-  if(up&&i-lastUp>=5){
-   out.push({
-    time:bars[i].time,
-    position:'belowBar',
-    color:'#25d9a4',
-    shape:'arrowUp',
-    text:'WATCH UP',
-    direction:'UP'
-   });
-
-   lastUp=i;
-  }
-
-  if(down&&i-lastDown>=5){
-   out.push({
-    time:bars[i].time,
-    position:'aboveBar',
-    color:'#ff547c',
-    shape:'arrowDown',
-    text:'WATCH DOWN',
-    direction:'DOWN'
-   });
-
-   lastDown=i;
-  }
- }
-
- return out;
 }
 
 function updateNotice(){
- const notice=$('notice');
-
- let text='';
- let color=amber;
-
- if(!fresh()){
-  text=
-   'WAIT · BTC trade timestamp is stale or unavailable. '+
-   'New reversal warnings are paused.';
- }else if(expired()){
-  text=
-   'TARGET EXPIRED · Refresh the dashboard for the new '+
-   'Kalshi contract. Reversal warnings paused.';
- }else if(TARGET===null){
-  text=
-   'WAIT · Kalshi target unavailable. '+
-   'No target-based warning can be evaluated.';
- }else if(bars.length<60||!cached){
-  text=
-   'WAIT · Need 60 real, recent candles before '+
-   'evaluating reversal warnings.';
- }else if(recentGap()){
-  text=
-   'WAIT · Recent candle history has a gap. '+
-   'Indicators may be incomplete; warnings paused.';
- }else if(
-  Date.now()/1000-bars.at(-1).time>120
- ){
-  text=
-   'WAIT · Latest candle is stale. Warnings paused.';
+ if(Date.now()-lastTrade>12000){
+  $('feed').textContent='FEED STALE';
+  setNotice('WAIT · Live trade feed is stale.');
+  return;
+ }
+ $('feed').textContent='● LIVE · COINBASE';
+ if(CONFIG.closeMs!==null&&Date.now()>=CONFIG.closeMs){
+  setNotice('CONTRACT EXPIRED · Refresh for the new target.');
+  return;
+ }
+ if(CONFIG.target===null){
+  setNotice('WAIT · Kalshi target unavailable.');
+  return;
+ }
+ if(bars.length<30){
+  setNotice('WAIT · Collecting enough candles.');
+  return;
+ }
+ const distance=lastPrice-CONFIG.target;
+ if(Math.abs(distance)<25){
+  setNotice('⚠ TARGET DANGER · BTC is within $25 of target.');
  }else{
-  const current=ticks.at(-1);
-
-  const old=current
-   ?ticks.filter(
-     t=>t.time<=current.time-20
-    ).at(-1)
-   :null;
-
-  const distance=bars.at(-1).close-TARGET;
-
-  const loss=old&&current
-   ?Math.abs(old.price-TARGET)-
-    Math.abs(current.price-TARGET)
-   :0;
-
-  const shrinking=old&&
-   loss>Math.max(
-    8,
-    Math.abs(old.price-TARGET)*.20
-   );
-
-  const i=bars.length-1;
-
-  const cross=i>0&&
-   (cached.e9[i]-cached.e21[i])*
-   (cached.e9[i-1]-cached.e21[i-1])<0;
-
-  const latest=markers.at(-1);
-
-  const recent=latest&&
-   latest.time>=bars.at(-1).time-120;
-
-  if(shrinking){
-   text=
-    '⚠ CUSHION SHRINKING · Spot moved '+
-    fmt(loss)+
-    ' toward the target in about 20 seconds. '+
-    'Review reversal risk.';
-  }else if(cross){
-   text=
-    '⚠ EMA FLIP · EMA 9 crossed EMA 21 on the '+
-    'developing candle. Confirmation can change '+
-    'before close.';
-  }else if(recent){
-   const up=latest.direction==='UP';
-
-   text=
-    (up?'▲ WATCH UP':'▼ WATCH DOWN')+
-    ' · Possible momentum turn on the 1-minute chart. '+
-    'Experimental warning, not a confirmed entry.';
-
-   color=up?green:red;
-  }else if(Math.abs(distance)<25){
-   text=
-    '⚠ TARGET DANGER ZONE · Spot is within $25 of '+
-    'the target. Small moves can change the apparent side.';
-  }else{
-   text=
-    'WAIT · No active reversal warning. This does not '+
-    'confirm that the current side will settle.';
-  }
- }
-
- notice.textContent=text;
- notice.style.color=color;
-
- const current=ticks.at(-1);
-
- const old=current
-  ?ticks.filter(
-    t=>t.time<=current.time-20
-   ).at(-1)
-  :null;
-
- if(old&&current){
-  const d=current.price-old.price;
-
-  $('momentum').textContent=
-   (d>=0?'+':'−')+fmt(Math.abs(d));
-
-  $('momentum').style.color=
-   d>=0?green:red;
- }else{
-  $('momentum').textContent='Collecting…';
+  setNotice(
+   'MONITOR · '+(distance>=0?'BTC ABOVE TARGET':'BTC BELOW TARGET')+
+   ' · WATCH arrows are experimental, not trade instructions.',
+   distance>=0?green:red
+  );
  }
 }
 
-function put(name,data,full){
- if(full){
-  series[name].setData(data);
- }else if(data.length){
-  series[name].update(data.at(-1));
- }
-}
-
-function restoreRange(){
- if(!savedView||!chartReady)return;
-
- restoringView=true;
-
- try{
-  charts[0].timeScale().setVisibleRange(savedView);
- }catch(e){}
-
- restoringView=false;
-}
-
-function followLive(){
- userAdjustedView=false;
- savedView=null;
-
- try{
-  sessionStorage.removeItem(viewKey);
- }catch(e){}
-
- if(!bars.length)return;
-
- restoringView=true;
-
- charts[0].applyOptions({
-  timeScale:{
-   shiftVisibleRangeOnNewBar:true
-  }
- });
-
- charts[0].timeScale().setVisibleLogicalRange({
-  from:Math.max(0,bars.length-30),
-  to:bars.length+4
- });
-
- restoringView=false;
-}
-
-function calculate(){
- if(!bars.length||!series.candles)return;
-
- const close=bars.map(b=>b.close);
-
- const e9=ema(close,9);
- const e21=ema(close,21);
- const rv=rsi(close);
- const mc=macd(close);
- const bb=bollinger(close);
- const lev=levels();
-
- cached={e9,e21,rv,mc};
-
- const full=needsReset||!chartReady;
-
- const values={
-  ema9:e9,
-  ema21:e21,
-  ema50:ema(close,50),
-  vwap:vwap(),
-  bbHigh:bb.high,
-  bbLow:bb.low,
-  support:lev.low,
-  resistance:lev.high,
-  rsi:rv,
-  macd:mc.m,
-  signal:mc.signal
- };
-
- restoringView=true;
-
- for(const [name,value] of Object.entries(values)){
-  put(name,points(value),full);
- }
-
- put(
-  'candles',
-  bars.map(b=>({
-   time:b.time,
-   open:b.open,
-   high:b.high,
-   low:b.low,
-   close:b.close
-  })),
-  full
- );
-
- put(
-  'volume',
-  bars.map(b=>({
-   time:b.time,
-   value:b.volume||0,
-   color:b.close>=b.open
-    ?'#2bb88d'
-    :'#cc5079'
-  })),
-  full
- );
-
- put(
-  'hist',
-  bars.map((b,i)=>
-   Number.isFinite(mc.hist[i])
-    ?{
-      time:b.time,
-      value:mc.hist[i],
-      color:mc.hist[i]>=0
-       ?'#2bb88d'
-       :'#cc5079'
-     }
-    :{time:b.time}
-  ),
-  full
- );
-
- restoringView=false;
-
- const wasReady=chartReady;
-
- chartReady=true;
- needsReset=false;
- const newRenderedTime=bars.at(-1).time;
- const advancedToNewCandle=wasReady&&newRenderedTime>renderedTime;
- renderedTime=newRenderedTime;
-
- if(full){
-  if(userAdjustedView&&savedView){
-   restoreRange();
-  }else if(!wasReady){
-   followLive();
-  }
- }
- // Hold the chosen 30-candle span steady while following the live edge.
- // Reapply after history setData() and whenever a new minute begins.
- if(!userAdjustedView&&(full||advancedToNewCandle)){
-  restoringView=true;
-  try{
-   charts[0].timeScale().setVisibleLogicalRange({
-    from:Math.max(0,bars.length-30),
-    to:bars.length+4
-   });
-  }catch(e){}
-  restoringView=false;
- }
-
- const i=bars.length-1;
-
- if(
-  Number.isFinite(e9[i])&&
-  Number.isFinite(e21[i])
- ){
-  const d=e9[i]-e21[i];
-
-  $('trend').textContent=
-   d>0?'UPWARD':d<0?'DOWNWARD':'NEUTRAL';
-
-  $('trend').style.color=
-   d>0?green:d<0?red:amber;
- }
-
- $('rsiValue').textContent=
-  Number.isFinite(rv[i])
-   ?rv[i].toFixed(1)
-   :'—';
-
- // Retain historical arrows from verified contiguous periods.
- // The gap warning still blocks new actionable WATCH notices.
- markers=bars.length>=60
-  ?detectReversals(close,e9,e21,rv,mc)
-  :[];
-
- series.candles.setMarkers(
-  flags.markers?markers:[]
- );
-
- updateNotice();
-}
-
-function schedule(){
- if(calculationTimer||dead)return;
-
- calculationTimer=setTimeout(()=>{
-  calculationTimer=null;
-  calculate();
- },180);
-}
-
-function onTrade(
- price,
- time,
- quantity=0,
- tradeId=null,
- source='WS'
-){
- if(
-  !Number.isFinite(price)||
-  price<=0||
-  !Number.isFinite(time)||
-  !Number.isFinite(quantity)||
-  quantity<0||
-  time*1000>Date.now()+3000||
-  time<lastEvent
- )return;
-
- if(
-  tradeId!==null&&
-  lastTradeId!==null&&
-  tradeId<=lastTradeId
- )return;
-
- if(tradeId!==null){
-  lastTradeId=tradeId;
- }
-
+function addTrade(price,time,volume=0){
+ if(!Number.isFinite(price)||price<=0)return;
  const minute=Math.floor(time/60)*60;
- const old=bars.at(-1);
+ if(!Number.isFinite(minute))return;
+ if(bars.length&&minute<bars.at(-1).time)return;
 
- if(old&&minute<old.time)return;
-
- if(old&&minute===old.time){
-  old.high=Math.max(old.high,price);
-  old.low=Math.min(old.low,price);
-  old.close=price;
-  old.volume+=quantity;
+ const last=bars.at(-1);
+ if(last&&last.time===minute){
+  last.high=Math.max(last.high,price);
+  last.low=Math.min(last.low,price);
+  last.close=price;
+  last.volume+=(volume||0);
  }else{
+  if(last&&minute-last.time>60){
+   // Do not manufacture missing candles.
+   setNotice('WAIT · Candle gap detected. Reloading history.');
+   loadHistory();
+   return;
+  }
   bars.push({
-   time:minute,
-   open:price,
-   high:price,
-   low:price,
-   close:price,
-   volume:quantity
+   time:minute,open:price,high:price,
+   low:price,close:price,volume:volume||0
   });
-
-  if(bars.length>360){
-   bars=bars.slice(-360);
-   needsReset=true;
-  }
-
-  if(old&&minute-old.time>60){
-   needsReset=true;
-   load();
-  }
+  if(bars.length>600)bars.shift();
  }
-
- lastEvent=time;
- lastTick=time*1000;
- feed=source;
-
- const prev=ticks.at(-1);
-
- if(
-  !prev||
-  prev.time!==time||
-  prev.price!==price
- ){
-  ticks.push({time,price});
- }
-
- ticks=ticks.filter(
-  t=>time-t.time<=180
- ).slice(-4000);
-
+ lastTrade=Date.now();
  updatePrice(price);
-
- if(fresh()){
-  setStatus(
-   source==='WS'?'LIVE · WS':'LIVE · REST',
-   green
-  );
- }else{
-  setStatus('STALE TRADE');
- }
-
- schedule();
+ render();
 }
 
-async function fetchJSON(url){
- const controller=new AbortController();
-
- const timer=setTimeout(
-  ()=>controller.abort(),
-  8000
- );
-
+async function loadHistory(){
  try{
-  const r=await fetch(url,{
-   cache:'no-store',
-   signal:controller.signal
-  });
+  const end=Math.floor(Date.now()/1000);
+  const start=end-300*60;
+  const url='https://api.exchange.coinbase.com/products/BTC-USD/candles'
+   +'?granularity=60&start='+new Date(start*1000).toISOString()
+   +'&end='+new Date(end*1000).toISOString();
 
-  if(!r.ok){
-   throw Error('HTTP '+r.status);
-  }
+  const response=await fetch(url,{cache:'no-store'});
+  if(!response.ok)throw Error('Coinbase history HTTP '+response.status);
+  const raw=await response.json();
+  if(!Array.isArray(raw))throw Error('Invalid candle response');
 
-  return await r.json();
- }finally{
-  clearTimeout(timer);
- }
-}
+  const history=raw.filter(x=>Array.isArray(x)&&x.length>=5)
+   .map(x=>({
+    time:Number(x[0]),low:Number(x[1]),high:Number(x[2]),
+    open:Number(x[3]),close:Number(x[4]),
+    volume:Number(x[5]||0)
+   }))
+   .filter(b=>[b.time,b.open,b.high,b.low,b.close]
+    .every(Number.isFinite))
+   .sort((a,b)=>a.time-b.time);
 
-async function load(){
- if(loading||dead)return;
-
- loading=true;
-
- const started=Date.now()/1000;
-
- try{
-  const data=await fetchJSON(
-   'https://api.exchange.coinbase.com/'+
-   'products/BTC-USD/candles?granularity=60'
-  );
-
-  if(!Array.isArray(data)){
-   throw Error('Invalid candles');
-  }
-
-  const map=new Map();
-
-  for(const x of data){
-   if(!Array.isArray(x)||x.length<6)continue;
-
-   const b={
-    time:Number(x[0]),
-    low:Number(x[1]),
-    high:Number(x[2]),
-    open:Number(x[3]),
-    close:Number(x[4]),
-    volume:Number(x[5])
-   };
-
-   if(
-    Object.values(b).every(Number.isFinite)&&
-    b.time>0&&
-    b.time<=Date.now()/1000&&
-    b.low>0&&
-    b.high>=Math.max(b.open,b.close,b.low)&&
-    b.low<=Math.min(b.open,b.close)&&
-    b.volume>=0
-   ){
-    map.set(b.time,b);
-   }
-  }
-
-  for(const b of bars){
-   const h=map.get(b.time);
-
-   if(
-    b.time>=Math.floor(started/60)*60||
-    !h
-   ){
-    map.set(
-     b.time,
-     h
-      ?{
-        ...h,
-        high:Math.max(h.high,b.high),
-        low:Math.min(h.low,b.low),
-        close:b.close,
-        volume:Math.max(h.volume,b.volume)
-       }
-      :b
-    );
-   }
-  }
-
-  bars=[...map.values()]
-   .sort((a,b)=>a.time-b.time)
-   .slice(-360);
-
-  if(!bars.length){
-   throw Error('Empty history');
-  }
-
-  needsReset=true;
-  historyError='';
-
-  if(!lastTick){
-   updatePrice(bars.at(-1).close);
-  }
-
-  calculate();
+  if(history.length<30)throw Error('Not enough history');
+  const unique=new Map(history.map(b=>[b.time,b]));
+  bars=[...unique.values()];
+  ready=false;
+  render();
  }catch(e){
-  historyError=
-   'Historical candles unavailable; waiting for '+
-   'enough real live candles.';
-
-  updateNotice();
- }finally{
-  loading=false;
+  setNotice('WAIT · Candle history unavailable: '+String(e.message||e));
  }
-}
-
-function reconnect(){
- if(reconnectTimer||dead)return;
-
- reconnectTimer=setTimeout(()=>{
-  reconnectTimer=null;
-  connect();
- },retry);
-
- retry=Math.min(30000,retry*2);
 }
 
 function connect(){
- if(
-  dead||
-  socket&&(
-   socket.readyState===0||
-   socket.readyState===1
-  )
- )return;
-
- try{
-  const ws=new WebSocket(
-   'wss://ws-feed.exchange.coinbase.com'
-  );
-
-  socket=ws;
-
-  ws.onopen=()=>{
-   if(dead)return;
-
-   lastMessage=Date.now();
-
-   ws.send(JSON.stringify({
-    type:'subscribe',
-    product_ids:['BTC-USD'],
-    channels:['matches','heartbeat']
-   }));
-
-   setStatus('CONNECTED · waiting');
-
-   if(chartReady&&recentGap()){
-    load();
-   }
-  };
-
-  ws.onmessage=event=>{
-   if(dead||socket!==ws)return;
-
-   lastMessage=Date.now();
-
-   let d;
-
-   try{
-    d=JSON.parse(event.data);
-   }catch(e){
-    return;
-   }
-
-   if(d.type==='error'){
-    setStatus('FEED ERROR');
-    ws.close();
-    return;
-   }
-
-   if(
-    d.type==='match'||
-    d.type==='last_match'
-   ){
-    const t=Date.parse(d.time)/1000;
-
-    onTrade(
-     Number(d.price),
-     t,
-     d.type==='last_match'
-      ?0
-      :(Number(d.size)||0),
-     Number.isFinite(Number(d.trade_id))
-      ?Number(d.trade_id)
-      :null
-    );
-
-    if(fresh()){
-     retry=1000;
-    }
-   }
-  };
-
-  ws.onerror=()=>{
-   setStatus('RECONNECTING');
-   ws.close();
-  };
-
-  ws.onclose=()=>{
-   if(dead||socket!==ws)return;
-
-   socket=null;
-   setStatus('RECONNECTING');
-   reconnect();
-  };
- }catch(e){
-  setStatus('FEED UNAVAILABLE');
-  reconnect();
+ if(socket){
+  try{socket.close()}catch(e){}
  }
-}
-
-let polling=false;
-
-async function pollFallback(){
- if(dead||polling||fresh())return;
-
- polling=true;
-
- try{
-  const d=await fetchJSON(
-   'https://api.exchange.coinbase.com/'+
-   'products/BTC-USD/ticker'
-  );
-
-  onTrade(
-   Number(d.price),
-   Date.parse(d.time)/1000,
-   0,
-   Number.isFinite(Number(d.trade_id))
-    ?Number(d.trade_id)
-    :null,
-   'REST'
-  );
- }catch(e){
- }finally{
-  polling=false;
- }
-}
-
-function updateCountdown(){
- if(dead)return;
- if(CONFIG.closeMs!==null){
-  const sec=Math.max(
-   0,
-   Math.floor(
-    (CONFIG.closeMs-Date.now())/1000
-   )
-  );
-
-  $('contract').textContent=
-   (CONFIG.ticker?CONFIG.ticker+' · ':'')+
-   (
-    expired()
-     ?'TARGET EXPIRED'
-     :String(Math.floor(sec/60)).padStart(2,'0')+
-      ':'+
-      String(sec%60).padStart(2,'0')+
-      ' remaining'
-   );
- }else{
-  $('contract').textContent=
-   CONFIG.ticker||
-   'Target snapshot · confirm current contract';
- }
-
-}
-
-function health(){
- if(dead)return;
-
- const age=lastTick
-  ?(Date.now()-lastTick)/1000
-  :null;
-
- if(fresh()){
-  setStatus(
-   'LIVE · '+
-   feed+
-   ' · '+
-   Math.max(0,age).toFixed(0)+
-   's',
-   green
-  );
- }else{
-  setStatus(
-   lastTick
-    ?'STALE · '+Math.max(0,age).toFixed(0)+'s'
-    :'WAITING FOR TRADE'
-  );
-
- }
-
- updateCountdown();
-
- if(expired()){
-  series.candles?.setMarkers([]);
- }
-
- updateNotice();
-
- if(
-  socket&&
-  lastMessage&&
-  Date.now()-lastMessage>20000
- ){
-  socket.close();
- }
-}
-
-let healthTimer=null;
-let countdownTimer=null;
-let historyTimer=null;
-let pollTimer=null;
-
-function start(){
- if(!window.LightweightCharts){
-  setStatus('CHART LIBRARY UNAVAILABLE');
-
-  $('notice').textContent=
-   'Chart library could not load. '+
-   'Retry the page or check your connection.';
-
-  return;
- }
-
- const main=chartFor('main');
-
- main.timeScale().subscribeVisibleTimeRangeChange(
-  range=>{
-   if(
-    !chartReady||
-    !userAdjustedView||
-    restoringView||
-    !range||
-    !Number.isFinite(range.from)||
-    !Number.isFinite(range.to)
-   )return;
-
-   savedView={
-    from:range.from,
-    to:range.to
-   };
-
-   try{
-    sessionStorage.setItem(
-     viewKey,
-     JSON.stringify(savedView)
-    );
-   }catch(e){}
-  }
- );
-
- const manualView=()=>{
-  userAdjustedView=true;
-
-  main.applyOptions({
-   timeScale:{
-    shiftVisibleRangeOnNewBar:false
-   }
-  });
+ socket=new WebSocket('wss://ws-feed.exchange.coinbase.com');
+ socket.onopen=()=>{
+  socket.send(JSON.stringify({
+   type:'subscribe',
+   product_ids:['BTC-USD'],
+   channels:['matches']
+  }));
  };
-
- for(
-  const event of [
-   'wheel'
-  ]
- ){
-  $('main').addEventListener(
-   event,
-   manualView,
-   {passive:true}
-  );
- }
-
- let dragStart=null;
- $('main').addEventListener('pointerdown',e=>{
-  dragStart={x:e.clientX,y:e.clientY};
- },{passive:true});
- $('main').addEventListener('pointermove',e=>{
-  if(dragStart&&Math.hypot(e.clientX-dragStart.x,e.clientY-dragStart.y)>10){
-   manualView();
-   dragStart=null;
-  }
- },{passive:true});
- for(const ev of ['pointerup','pointercancel','pointerleave']){
-  $('main').addEventListener(ev,()=>{dragStart=null;},{passive:true});
- }
- $('main').addEventListener('touchstart',e=>{
-  if(e.touches.length>1)manualView();
- },{passive:true});
-
- if(userAdjustedView){
-  main.applyOptions({
-   timeScale:{
-    shiftVisibleRangeOnNewBar:false
-   }
-  });
- }
-
- series.candles=main.addCandlestickSeries({
-  upColor:'#25d9a4',
-  downColor:'#ff547c',
-  wickUpColor:'#25d9a4',
-  wickDownColor:'#ff547c',
-  borderVisible:false
- });
-
- const overlays=[
-  ['ema9','#c68bff',2],
-  ['ema21','#58a7ff',2],
-  ['ema50','#ffac61',2],
-  ['vwap','#57e5aa',2],
-  ['bbHigh','#b9b6c7',1],
-  ['bbLow','#b9b6c7',1],
-  ['support','#44bca9',1],
-  ['resistance','#f47e99',1]
- ];
-
- for(const [name,color,width] of overlays){
-  series[name]=line(
-   main,
-   color,
-   width,
-   name.startsWith('bb')?2:0
-  );
- }
-
- if(TARGET!==null){
-  series.candles.createPriceLine({
-   price:TARGET,
-   color:'#f4d45d',
-   lineWidth:2,
-   lineStyle:2,
-   axisLabelVisible:true,
-   title:''
-  });
- }
-
- const vc=chartFor('volume');
-
- series.volume=vc.addHistogramSeries({
-  priceFormat:{type:'volume'},
-  priceScaleId:''
- });
-
- const rc=chartFor('rsi');
-
- series.rsi=line(
-  rc,
-  '#bd89ff',
-  2
- );
-
- for(const value of [30,50,70]){
-  series.rsi.createPriceLine({
-   price:value,
-   color:'#8e628c',
-   lineStyle:2,
-   axisLabelVisible:true,
-   title:String(value)
-  });
- }
-
- const mc=chartFor('macd');
-
- series.hist=mc.addHistogramSeries({
-  priceLineVisible:false,
-  lastValueVisible:false
- });
-
- series.macd=line(mc,'#6bb4ff',2);
- series.signal=line(mc,'#ffac69',2);
-
- main.timeScale().subscribeVisibleLogicalRangeChange(
-  range=>{
-   if(range){
-    for(const c of charts.slice(1)){
-     c.timeScale().setVisibleLogicalRange(range);
-    }
-   }
-  }
- );
-
- $('resetView').onclick=followLive;
-
- $('clean').onclick=()=>{
-  advancedMode=false;
-  syncPanels();
+ socket.onmessage=event=>{
+  try{
+   const d=JSON.parse(event.data);
+   if(d.type!=='match'&&d.type!=='last_match')return;
+   if(d.product_id!=='BTC-USD')return;
+   const price=Number(d.price);
+   const time=Date.parse(d.time)/1000;
+   if(!Number.isFinite(time))return;
+   addTrade(price,time,Number(d.size||0));
+  }catch(e){}
  };
-
- $('advanced').onclick=()=>{
-  advancedMode=true;
-  syncPanels();
- };
-
- document.querySelectorAll(
-  'input[data-key]'
- ).forEach(input=>{
-  input.addEventListener('change',()=>{
-   flags[input.dataset.key]=input.checked;
-   syncPanels();
-  });
- });
-
- syncPanels();
-
- load().finally(connect);
-
- healthTimer=setInterval(health,1000);
- countdownTimer=setInterval(updateCountdown,250);
- historyTimer=setInterval(()=>{
-  if(!dead&&recentGap()&&!loading)load();
- },30000);
- pollTimer=setInterval(pollFallback,4000);
-
- health();
-}
-
-window.addEventListener('pagehide',()=>{
- dead=true;
-
- if(reconnectTimer){
+ socket.onclose=()=>{
+  $('feed').textContent='RECONNECTING…';
   clearTimeout(reconnectTimer);
- }
-
- if(calculationTimer){
-  clearTimeout(calculationTimer);
- }
-
- clearInterval(healthTimer);
- clearInterval(countdownTimer);
- clearInterval(historyTimer);
- clearInterval(pollTimer);
-
- socket?.close();
-});
-
-window.addEventListener('load',requestResize);
-window.addEventListener('resize',requestResize);
-
-if(window.ResizeObserver){
- new ResizeObserver(requestResize)
-  .observe(document.body);
+  reconnectTimer=setTimeout(connect,3000);
+ };
+ socket.onerror=()=>socket.close();
 }
 
-start();
-requestResize();
+function init(){
+ $('target').textContent=CONFIG.target===null
+  ?'Unavailable':fmt(CONFIG.target);
 
+ chart=makeChart($('main'),340);
+ candles=chart.addCandlestickSeries({
+  upColor:'#37d7a3',downColor:'#ff6488',
+  borderUpColor:'#37d7a3',borderDownColor:'#ff6488',
+  wickUpColor:'#37d7a3',wickDownColor:'#ff6488'
+ });
+ ema9Line=chart.addLineSeries({
+  color:'#bb77ff',lineWidth:2,
+  priceLineVisible:false,lastValueVisible:false
+ });
+ ema21Line=chart.addLineSeries({
+  color:'#54b9ff',lineWidth:2,
+  priceLineVisible:false,lastValueVisible:false
+ });
+
+ if(CONFIG.target!==null){
+  targetLine=candles.createPriceLine({
+   price:CONFIG.target,color:'#ffd36e',
+   lineWidth:2,
+   lineStyle:LightweightCharts.LineStyle.Dashed,
+   axisLabelVisible:true,title:'KALSHI TARGET'
+  });
+ }
+
+ rsiChart=makeChart($('rsiPanel'),100);
+ rsiLine=rsiChart.addLineSeries({
+  color:'#bb77ff',lineWidth:2,
+  priceLineVisible:false
+ });
+ for(const level of [30,50,70]){
+  rsiLine.createPriceLine({
+   price:level,color:'#6a527e',
+   lineWidth:1,
+   lineStyle:LightweightCharts.LineStyle.Dashed,
+   axisLabelVisible:true
+  });
+ }
+
+ $('range').value=String(zoom);
+ $('rsiPanel').style.display=rsiVisible?'block':'none';
+ $('rsiButton').textContent=rsiVisible?'HIDE RSI':'SHOW RSI';
+ setFollow(follow);
+
+ chart.timeScale().subscribeVisibleLogicalRangeChange(()=>{
+  if(restoring||!ready)return;
+  const width=visibleWidth();
+  zoom=width;
+  // User zoom/pan pauses automatic following.
+  // FOLLOW LIVE resumes with this same width.
+  setFollow(false);
+  save();
+ });
+
+ $('follow').onclick=()=>{
+  setFollow(true);
+  moveToLive(visibleWidth());
+ };
+
+ $('reset').onclick=()=>{
+  zoom=60;
+  $('range').value='60';
+  setFollow(true);
+  moveToLive(60);
+  save();
+ };
+
+ $('range').onchange=()=>{
+  zoom=Number($('range').value);
+  setFollow(true);
+  moveToLive(zoom);
+  save();
+ };
+
+ $('rsiButton').onclick=()=>{
+  rsiVisible=!rsiVisible;
+  $('rsiPanel').style.display=rsiVisible?'block':'none';
+  $('rsiButton').textContent=rsiVisible?'HIDE RSI':'SHOW RSI';
+  save();
+  resize();
+ };
+
+ function resize(){
+  chart.applyOptions({width:Math.max(1,$('main').clientWidth)});
+  rsiChart.applyOptions({
+   width:Math.max(1,$('rsiPanel').clientWidth)
+  });
+  try{
+   window.parent.postMessage({
+    isStreamlitMessage:true,
+    type:'streamlit:setFrameHeight',
+    height:document.documentElement.scrollHeight+8
+   },'*');
+  }catch(e){}
+ }
+ new ResizeObserver(resize).observe(document.body);
+ resize();
+
+ loadHistory().then(connect);
+ setInterval(updateNotice,3000);
+ // Periodically reconcile websocket data with Coinbase history.
+ setInterval(loadHistory,180000);
+}
+
+if(typeof LightweightCharts==='undefined'){
+ setNotice('WAIT · Chart library unavailable.');
+}else{
+ init();
+}
 </script>
 </body>
-</html>'''
-
-    # Keep the live WATCH status above the main chart.
-    notice_start = html.find('<div id="notice"')
-
-    if notice_start >= 0:
-        notice_end = html.find("</div>", notice_start)
-
-        if notice_end >= 0:
-            notice_end += len("</div>")
-
-            notice_html = html[notice_start:notice_end]
-
-            html = (
-                html[:notice_start]
-                + html[notice_end:]
-            )
-
-            html = html.replace(
-                '<div class="panel">',
-                notice_html + '\n<div class="panel">',
-                1,
-            )
-
-    html = html.replace(
-        "</head>",
-        '<style>#notice{margin:8px 0}'
-        '#notice::before{content:"REVERSAL WATCH STATUS";'
-        'display:block;font-size:10px;letter-spacing:1px;'
-        'color:#cbb5e8;margin-bottom:4px}</style></head>',
-        1,
-    )
-
-    try:
-        frame_height = max(
-            680,
-            min(2000, int(height)),
-        )
-    except (TypeError, ValueError, OverflowError):
-        frame_height = 680
-
-    components.html(
-        html.replace("__CONFIG__", config),
-        height=frame_height,
-        scrolling=True,
-    )
+</html>
+"""
+    html = html.replace("__CONFIG__", config)
+    components.html(html, height=max(int(height), 510), scrolling=True)
