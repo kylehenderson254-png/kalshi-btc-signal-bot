@@ -1,23 +1,25 @@
 
 """
 QUEEN'S EDGE | 254
-LIVE CHART RECOVERY
+LIVE BITCOIN CHART RECOVERY
 
-PAPER ONLY — NO REAL ORDERS.
+PAPER ONLY — NO REAL ORDERS
 
-This entry point uses the existing Queen's Edge
-dashboard and chart modules.
+This entry point restores the original Coinbase
+streaming chart renderer without modifying its
+JavaScript or changing the existing paper engine.
 
-Fixes:
-- Removes the recursive AST chart override.
-- Renders the chart in a local Streamlit container.
-- Shows chart errors instead of silently hiding them.
-- Keeps the original V4 paper engine and safety rules.
+Required companion files:
+- queens_preview_base.py
+- queens_original.py
+- queens_live_chart.py
+- queens_v3_guard.py
 
-This is a chart recovery build.
-It does not add new automatic STRONG LOCK entries.
+This is a chart recovery release.
+It does not add automatic STRONG LOCK paper entries.
 """
 
+import ast
 import importlib.util
 from pathlib import Path
 
@@ -26,17 +28,17 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
 
-REQUIRED_FILES = [
+REQUIRED_FILES = (
     "queens_preview_base.py",
     "queens_original.py",
     "queens_live_chart.py",
     "queens_v3_guard.py",
-]
+)
 
 missing = [
-    filename
-    for filename in REQUIRED_FILES
-    if not (ROOT / filename).is_file()
+    name
+    for name in REQUIRED_FILES
+    if not (ROOT / name).is_file()
 ]
 
 if missing:
@@ -47,129 +49,165 @@ if missing:
     st.stop()
 
 
-# --------------------------------------------------
-# LOAD EXISTING DASHBOARD
-# --------------------------------------------------
+# -------------------------------------------------
+# LOAD EXISTING QUEEN'S EDGE BASE
+# -------------------------------------------------
 
-BASE_PATH = ROOT / "queens_preview_base.py"
+BASE_FILE = ROOT / "queens_preview_base.py"
 
 spec = importlib.util.spec_from_file_location(
     "queens_preview_base",
-    BASE_PATH,
+    BASE_FILE,
 )
 
 if spec is None or spec.loader is None:
     st.error(
-        "Unable to initialize Queen's Edge."
+        "Queen's Edge base module could not be loaded."
     )
     st.stop()
 
 base = importlib.util.module_from_spec(spec)
 
-spec.loader.exec_module(base)
+try:
+    spec.loader.exec_module(base)
+except Exception as exc:
+    st.error("Queen's Edge initialization failed.")
+    st.exception(exc)
+    st.stop()
 
 
-# --------------------------------------------------
-# LIVE CHART RECOVERY
-# --------------------------------------------------
+# -------------------------------------------------
+# RESTORE ORIGINAL STREAMING CHART RENDERER
+# -------------------------------------------------
 
-# Save the original transformer before replacing it.
-# Never call the replacement recursively.
+# The existing chart already supports Coinbase
+# WebSocket updates, candles, indicators and WATCH
+# signals.
+#
+# Use that renderer directly. Do not apply another
+# HTML or JavaScript startup transformation.
 
-original_compact_original = base.compact_original
+original_chart_renderer = base.render_live_chart
 
 
-def recover_chart(source):
+def use_original_chart_renderer(path):
     """
-    Keep the existing dashboard layout transformation.
+    Keep the existing streaming chart implementation.
 
-    Replace the chart's cross-fragment placeholder
-    with a local Streamlit container.
-
-    This avoids relying on a placeholder created
-    in a different Streamlit execution context.
+    The path is supplied by the base compatibility
+    loader, but the already-imported renderer is used
+    directly.
     """
-
-    old_chart_block = (
-        "    with qe_chart_slot:\n"
-        '        st.markdown('
-        '"#### 📈 LIVE BITCOIN · STREAMING CHART")\n'
-        "        render_live_chart("
-        "strike, close_time=qe_close, "
-        'market_ticker=market.get("ticker") '
-        "if market else None)\n"
-    )
-
-    new_chart_block = (
-        "    with st.container():\n"
-        '        st.markdown('
-        '"#### 📈 LIVE BITCOIN · STREAMING CHART")\n'
-        "        try:\n"
-        "            render_live_chart(\n"
-        "                strike,\n"
-        "                close_time=qe_close,\n"
-        "                market_ticker=(\n"
-        '                    market.get("ticker")\n'
-        "                    if market else None\n"
-        "                ),\n"
-        "            )\n"
-        "        except Exception as chart_error:\n"
-        "            st.error(\n"
-        '                "Live Bitcoin chart failed to render."\n'
-        "            )\n"
-        "            with st.expander(\n"
-        '                "Chart diagnostics",\n'
-        "                expanded=False,\n"
-        "            ):\n"
-        "                st.code(str(chart_error))\n"
-    )
-
-    if source.count(old_chart_block) != 1:
+    if not Path(path).is_file():
         raise RuntimeError(
-            "Chart compatibility check failed. "
-            "Expected chart block was not found."
+            "Streaming chart module is missing."
         )
 
-    source = source.replace(
-        old_chart_block,
-        new_chart_block,
-        1,
-    )
-
-    # Call the saved original function.
-    # Do not call base.compact_original here.
-    return original_compact_original(source)
+    return original_chart_renderer
 
 
-base.compact_original = recover_chart
+base.clean_chart_renderer = use_original_chart_renderer
 
 
-# --------------------------------------------------
-# START DASHBOARD
-# --------------------------------------------------
+# -------------------------------------------------
+# REPAIR CHART CONTAINER OWNERSHIP
+# -------------------------------------------------
 
-if __name__ == "__main__":
+# Capture the original layout transformer BEFORE
+# overriding it. This avoids calling the replacement
+# recursively.
+
+original_layout_transformer = base.compact_original
+
+
+class LocalChartContainer(ast.NodeTransformer):
+    """
+    Replace the chart's external placeholder with
+    a local container at its actual render location.
+
+    This does not change the paper scanner, signals,
+    market calculations or historical records.
+    """
+
+    def __init__(self):
+        self.replacements = 0
+
+    def visit_With(self, node):
+        self.generic_visit(node)
+
+        for item in node.items:
+            expression = item.context_expr
+
+            if (
+                isinstance(expression, ast.Name)
+                and expression.id == "qe_chart_slot"
+            ):
+                item.context_expr = ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Name(
+                            id="st",
+                            ctx=ast.Load(),
+                        ),
+                        attr="container",
+                        ctx=ast.Load(),
+                    ),
+                    args=[],
+                    keywords=[],
+                )
+
+                self.replacements += 1
+
+        return node
+
+
+def recover_chart_layout(source):
+    """
+    Apply the existing compact dashboard layout,
+    then repair only the chart container.
+
+    Never call base.compact_original from here,
+    because that name now refers to this function.
+    """
+
+    tree = original_layout_transformer(source)
+
+    repair = LocalChartContainer()
+    tree = repair.visit(tree)
+
+    if repair.replacements != 1:
+        raise RuntimeError(
+            "Chart compatibility check failed: "
+            "expected one chart container, found "
+            + str(repair.replacements)
+        )
+
+    return ast.fix_missing_locations(tree)
+
+
+base.compact_original = recover_chart_layout
+
+
+# -------------------------------------------------
+# START EXISTING QUEEN'S EDGE DASHBOARD
+# -------------------------------------------------
+
+def main():
     try:
         base.launch()
 
     except Exception as exc:
         st.error(
-            "Queen's Edge could not start."
+            "Queen's Edge encountered a startup error."
         )
 
-        with st.expander(
-            "Startup diagnostics",
-            expanded=True,
-        ):
-            st.code(
-                type(exc).__name__
-                + ": "
-                + str(exc)
-            )
+        st.exception(exc)
 
-        st.info(
-            "Your saved paper journal has not "
-            "been intentionally modified."
+        st.caption(
+            "No real orders are placed by this "
+            "application. Existing paper records "
+            "are not intentionally modified."
         )
 
-        st.stop()
+
+if __name__ == "__main__":
+    main()
