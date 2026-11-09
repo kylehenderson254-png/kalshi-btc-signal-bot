@@ -834,7 +834,7 @@ def guidance_panel(market, verified, quote_fn, candle_fn, rows):
                 pass
         with st.expander('Signal diagnostics · paper only', expanded=False):
             st.write({'status': status, 'side': side, 'trend': trend,
-                      'candle_source': feed_name, 'feed_errors': feed_errors,
+                      'candle_source': feed_name, 'selected_candle_age_seconds': result.get('candle_age'), 'feed_errors_other_sources': feed_errors,
                       'reasons': result.get('reasons', [])})
     except Exception as exc:
         st.warning('WAIT · Guidance unavailable; no signal issued.')
@@ -978,6 +978,99 @@ def paper_history(rows):
             'are never backfilled. Fills and fees are estimates. '
             'V4 is separate from Early, Locked, WATCH and V2 history.'
         )
+
+
+def near_miss_observe(store, market, result, quote_at, trade_time, multiplier):
+    """Save one qualifying-price rejected setup per market/side, paper only."""
+    if result.get('status') != 'FILTERED' or not snapshot_current(quote_at, trade_time):
+        return
+    side = result.get('side')
+    if side not in ('ABOVE', 'BELOW') or result.get('candle_age') is None:
+        return
+    if not -3 <= result['candle_age'] <= 90:
+        return
+    ask, bid = quote(market, side, 'ask'), quote(market, side, 'bid')
+    if ask is None or bid is None or not (MIN_ASK <= ask <= MAX_ASK):
+        return
+    if not (0 < bid <= ask < 1 and ask - bid <= 0.030001):
+        return
+    price = cents_round(ask + SLIPPAGE)
+    qty, estimated_fee, risk = size_for(price, multiplier)
+    if qty < 1 or available(market, side, 'ask') is None or available(market, side, 'ask') < qty:
+        return
+    ticker = str(market.get('ticker') or '')
+    close = utc(market.get('close_time'))
+    if not ticker.startswith('KXBTC15M-') or close is None:
+        return
+    key = f'{int(close.timestamp()*1000)}_{ticker}_{side}.json'
+    event = {
+        'ticker': ticker, 'side': side, 'observed_at': now_utc().isoformat(),
+        'close_ts': close.timestamp(), 'ask': ask, 'price': price,
+        'qty': qty, 'risk': risk, 'fee': estimated_fee,
+        'target': number(market.get('floor_strike')),
+        'distance': result.get('distance'), 'rsi': result.get('rsi'),
+        'ema_trend': result.get('ema_trend'),
+        'candle_age': result.get('candle_age'),
+        'reasons': list(result.get('reasons') or []),
+        'note': 'Rejected observation, not a paper BUY or actual order',
+    }
+    store.once('near_misses', key, event)
+
+
+def near_miss_report(store):
+    """Grade saved rejected observations using official Kalshi settlements."""
+    with st.expander('👑 Near Miss Tracker · rejected setups', expanded=False):
+        st.caption('One price-eligible rejected observation per contract and side. '
+                   'Never counted as a paper BUY. Only official settlement grades results.')
+        items = store.request('POST', '/object/list/' + BUCKET, {
+            'prefix': 'near_misses', 'limit': 100, 'offset': 0,
+            'sortBy': {'column': 'name', 'order': 'desc'},
+        })
+        if not isinstance(items, list):
+            st.caption('Near-miss history unavailable.')
+            return
+        output = []
+        checks = 0
+        for item in items:
+            key = str(item.get('name') or '')
+            if not key.endswith('.json'):
+                continue
+            event = store.get('near_misses', key)
+            if not isinstance(event, dict):
+                continue
+            outcome = store.get('near_miss_finals', key)
+            if not outcome and now_utc().timestamp() > float(event.get('close_ts') or 0) + 60 and checks < 3:
+                checks += 1
+                try:
+                    settled = public_get('/markets/' + event['ticker'])['market']
+                    result = settled.get('result')
+                    if settled.get('status') in ('settled', 'finalized') and result in ('yes', 'no'):
+                        win = (event['side'] == 'ABOVE') == (result == 'yes')
+                        outcome = store.once('near_miss_finals', key, {
+                            'result': result, 'win': win,
+                            'hypothetical_pnl': round((event['qty'] if win else 0) - event['risk'], 6),
+                            'graded_at': now_utc().isoformat(),
+                        })
+                except (requests.RequestException, ValueError, KeyError, TypeError):
+                    pass
+            output.append({
+                'Observed CT': (utc(event.get('observed_at')).astimezone(CT).strftime('%m/%d %H:%M:%S')
+                                if utc(event.get('observed_at')) else '—'),
+                'Ticker': event.get('ticker'), 'Side': event.get('side'),
+                'Ask ¢': round(float(event.get('ask') or 0)*100, 1),
+                'Why skipped': '; '.join(event.get('reasons') or []),
+                'Outcome': ('WIN' if outcome.get('win') else 'LOSS') if outcome else 'PENDING',
+                'Hypothetical net $': outcome.get('hypothetical_pnl') if outcome else None,
+            })
+        if output:
+            st.dataframe(output, hide_index=True, use_container_width=True)
+            graded = [x for x in output if x['Outcome'] != 'PENDING']
+            if graded:
+                st.caption(f"Graded near misses: {len(graded)}; hypothetical wins: "
+                           f"{sum(x['Outcome']=='WIN' for x in graded)}. "
+                           'Not actual fills, and selected observations are not independent.')
+        else:
+            st.caption('No price-eligible rejected setups recorded yet.')
 
 
 def evaluate_papers(
@@ -1191,6 +1284,8 @@ def evaluate_papers(
             else 'FILTERED'
         )
 
+        if enabled and df is not None and result.get('status') == 'FILTERED':
+            near_miss_observe(store, fresh_market, result, quote_at, trade_time, multiplier)
         return kind, 'WAIT · ' + '; '.join(reasons), reasons
 
     stamp = now_utc().timestamp()
@@ -1357,6 +1452,10 @@ def _run_paper_engine(
             )
 
         paper_history(rows)
+        try:
+            near_miss_report(store)
+        except Exception as exc:
+            st.caption('Near-miss reporting unavailable; existing paper scanner unchanged.')
 
     st.caption(
         'Actual paper strategy holds until official settlement. '
