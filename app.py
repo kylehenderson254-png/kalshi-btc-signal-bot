@@ -1,18 +1,14 @@
 
 """QUEEN'S EDGE | 254
-COMPACT V5 — DIRECT CHART FEED RECOVERY
+COMPACT V4 — RESTORED LIVE CHART
 
-PAPER ONLY. NO REAL ORDERS.
+PAPER ONLY — NO REAL ORDERS.
 
-Preserves:
-- Bull / bear dashboard branding
-- Compact layout and signal protection
-- V4 paper scanner and entry filters
-- Official paper P&L and history
-- Saved BUY / TP / EXIT chart markers
-- EMA 9 / EMA 21 and WATCH reversal arrows
+Restores the original chart rendering path.
+Preserves the V4 paper scanner, P&L, signal protection,
+compact layout, and recorded chart markers.
 
-Coinbase spot is indicative, not Kalshi settlement data.
+No experimental V5 candle-recovery injection.
 """
 
 import importlib.util
@@ -27,7 +23,7 @@ import streamlit.components.v1 as components
 
 
 # ============================================================
-# LOAD ORIGINAL QUEEN'S EDGE
+# LOAD ORIGINAL DASHBOARD
 # ============================================================
 
 ROOT = Path(__file__).resolve().parent
@@ -43,7 +39,7 @@ spec = importlib.util.spec_from_file_location(
 base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
 
-VERSION = "COMPACT V5 · SIGNAL FIX V3 · FEED RECOVERY"
+VERSION = "COMPACT V4 · SIGNAL FIX V3 · CHART RESTORED"
 
 
 # ============================================================
@@ -121,7 +117,7 @@ def all_paper_rows(self):
 
 
 # ============================================================
-# PAPER PERFORMANCE
+# OFFICIAL PAPER PERFORMANCE
 # ============================================================
 
 def clearer_paper_metrics(rows):
@@ -191,7 +187,7 @@ def clearer_paper_metrics(rows):
 
 
 # ============================================================
-# CORRECT ABOVE / BELOW QUOTE MAPPING
+# ABOVE / BELOW QUOTE MAPPING
 # ============================================================
 
 def fix_mid_quote_mapping():
@@ -225,7 +221,7 @@ def fix_mid_quote_mapping():
 
 # ============================================================
 # SIGNAL FIX V3
-# NEVER PROMOTE HISTORICAL EARLY CALLS
+# NO HISTORICAL CALL FALLBACK
 # ============================================================
 
 def normalized_direction(value):
@@ -327,7 +323,7 @@ def queen_signal_state(
 
 
 # ============================================================
-# SAVED PAPER BUY / TP / EXIT MARKERS
+# SAVED PAPER BUY / TP / EXIT EVENTS
 # ============================================================
 
 def recorded_events(rows, ticker):
@@ -405,7 +401,7 @@ def recorded_events(rows, ticker):
 
 
 # ============================================================
-# COMPACT PAPER STRIP
+# COMPACT PAPER PERFORMANCE
 # ============================================================
 
 def paper_strip(rows, ticker):
@@ -449,7 +445,7 @@ def paper_strip(rows, ticker):
 
 
 # ============================================================
-# COMPACT STYLING
+# COMPACT DASHBOARD STYLING
 # ============================================================
 
 COMPACT_CSS = """
@@ -692,168 +688,8 @@ def compact_header(
 
 
 # ============================================================
-# DIRECT CANDLE RECOVERY JAVASCRIPT
-# ============================================================
-
-RECOVERY_JS = r"""
-// QUEENS_EDGE_DIRECT_RECOVERY_V5
-// Actual Coinbase candles only. No synthetic candles.
-
-let qeRecoveryTimer = null;
-let qeLastRecovery = 0;
-
-async function qeFetchCandleHistory(){
- const now = Math.floor(Date.now()/60000)*60;
- const merged = new Map();
- let successful = 0;
-
- // Coinbase supports bounded historical windows.
- // Overlap windows to reduce boundary omissions.
- for(let i=2;i>=0;i--){
-  const end = now-i*100*60;
-  const start = end-105*60;
-
-  const url =
-   'https://api.exchange.coinbase.com/' +
-   'products/BTC-USD/candles?granularity=60' +
-   '&start=' +
-   encodeURIComponent(
-    new Date(start*1000).toISOString()
-   ) +
-   '&end=' +
-   encodeURIComponent(
-    new Date(end*1000).toISOString()
-   );
-
-  try{
-   const data=await fetchJSON(url);
-
-   if(!Array.isArray(data))continue;
-
-   successful++;
-
-   for(const x of data){
-    if(
-     Array.isArray(x) &&
-     x.length>=6 &&
-     Number.isFinite(Number(x[0]))
-    ){
-     merged.set(Number(x[0]),x);
-    }
-   }
-  }catch(e){
-   // Other windows may still succeed.
-  }
- }
-
- if(successful===0){
-  throw Error('Coinbase history recovery unavailable');
- }
-
- return [...merged.values()];
-}
-
-function qeRecoverHistory(){
- if(dead || loading)return;
-
- const now=Date.now();
-
- if(now-qeLastRecovery<20000)return;
-
- const latest=bars.at(-1);
-
- const stale=
-  !latest ||
-  now/1000-latest.time>120;
-
- const missing=
-  bars.length<60 ||
-  recentGap();
-
- if(stale || missing){
-  qeLastRecovery=now;
-  load();
- }
-}
-"""
-
-
-# ============================================================
-# INJECT RECOVERY INTO ACTUAL COMPACT CHART
-# ============================================================
-
-def inject_candle_recovery(html):
-    if "QUEENS_EDGE_DIRECT_RECOVERY_V5" in html:
-        return html
-
-    request_start = (
-        "  const data=await fetchJSON(\n"
-        "   'https://api.exchange.coinbase.com/'+\n"
-        "   'products/BTC-USD/candles?granularity=60'\n"
-        "  );"
-    )
-
-    if html.count(request_start) != 1:
-        raise RuntimeError(
-            "Feed compatibility: original candle "
-            "request not found. No unsafe replacement."
-        )
-
-    load_anchor = "async function load(){"
-
-    if html.count(load_anchor) != 1:
-        raise RuntimeError(
-            "Feed compatibility: history loader missing"
-        )
-
-    html = html.replace(
-        load_anchor,
-        RECOVERY_JS + "\n" + load_anchor,
-        1,
-    )
-
-    html = html.replace(
-        request_start,
-        "  const data=await qeFetchCandleHistory();",
-        1,
-    )
-
-    timer_anchor = (
-        " pollTimer=setInterval(pollFallback,4000);"
-    )
-
-    if html.count(timer_anchor) != 1:
-        raise RuntimeError(
-            "Feed compatibility: polling timer missing"
-        )
-
-    html = html.replace(
-        timer_anchor,
-        timer_anchor
-        + "\n qeRecoveryTimer=setInterval("
-        "qeRecoverHistory,5000);",
-        1,
-    )
-
-    cleanup_anchor = " clearInterval(healthTimer);"
-
-    if html.count(cleanup_anchor) != 1:
-        raise RuntimeError(
-            "Feed compatibility: cleanup missing"
-        )
-
-    html = html.replace(
-        cleanup_anchor,
-        " clearInterval(qeRecoveryTimer);\n"
-        + cleanup_anchor,
-        1,
-    )
-
-    return html
-
-
-# ============================================================
-# LIVE CHART + PAPER MARKERS
+# RESTORE ORIGINAL LIVE CHART
+# PRESERVE PAPER MARKERS
 # ============================================================
 
 original_compact_html = base.compact_chart_html
@@ -1065,15 +901,14 @@ body{
 </style>
 """
 
-    html = html.replace(
+    # IMPORTANT:
+    # Return original compact chart with display patches.
+    # No experimental candle-loader replacement.
+    return html.replace(
         "</head>",
         css + "</head>",
         1,
     )
-
-    # Patch the actual compact renderer's HTML.
-    # No changes to V4 scanner or strategy.
-    return inject_candle_recovery(html)
 
 
 # ============================================================
@@ -1106,6 +941,7 @@ components.html = compact_components_html
 
 # ============================================================
 # APPLY DISPLAY PATCHES
+# NO V4 STRATEGY CHANGES
 # ============================================================
 
 base.PaperJournal.rows = all_paper_rows
