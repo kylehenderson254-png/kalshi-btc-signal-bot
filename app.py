@@ -1,13 +1,17 @@
 
-"""QUEEN'S EDGE | 254 — clear signal dashboard + V4 paper tracking.
+"""QUEEN'S EDGE | 254 — Clear Signals + V4 Paper Tracking.
 
 PAPER ONLY. NO REAL ORDERS.
 
-Requires queens_preview_base.py, queens_original.py,
-queens_live_chart.py, and queens_v3_guard.py.
+Requires:
+    queens_preview_base.py
+    queens_original.py
+    queens_live_chart.py
+    queens_v3_guard.py
 
-Preserves existing paper entry rules, storage, history, and P&L.
+Preserves existing strategy, storage, paper history and P&L.
 """
+
 import importlib.util
 import inspect
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +19,11 @@ from html import escape
 from pathlib import Path
 
 import streamlit as st
+
+
+# ============================================================
+# LOAD ORIGINAL QUEEN'S EDGE
+# ============================================================
 
 ROOT = Path(__file__).resolve().parent
 BASE = ROOT / "queens_preview_base.py"
@@ -29,16 +38,18 @@ if not BASE.is_file():
 spec = importlib.util.spec_from_file_location(
     "queens_preview_base", BASE
 )
+
 base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
 
 
-# ------------------------------------------------------------
-# PRESERVE COMPLETE V4 PAPER HISTORY
-# ------------------------------------------------------------
+# ============================================================
+# V4 PAPER HISTORY — PRESERVE ALL ENTRIES
+# ============================================================
 
 def all_paper_rows(self):
-    """Read every stored V4 entry, not just the first 200."""
+    """Read all saved V4 entries using pagination."""
+
     names = []
     offset = 0
     page_size = 200
@@ -105,52 +116,62 @@ def all_paper_rows(self):
         return list(pool.map(load, names))
 
 
-# ------------------------------------------------------------
-# PRESERVE IMPROVED PAPER P&L
-# ------------------------------------------------------------
+# ============================================================
+# V4 PAPER P&L — PRESERVE IMPROVED TRACKING
+# ============================================================
 
 def clearer_paper_metrics(rows):
-    """Separate estimated exits from officially matched P&L."""
+    """Separate official results from estimated paper exits."""
+
     finals = [
-        r for r in rows if r.get("final")
-    ]
-    exited_pending = [
-        r for r in rows
-        if not r.get("final") and r.get("exit")
-    ]
-    open_rows = [
-        r for r in rows
-        if not r.get("final") and not r.get("exit")
+        row for row in rows
+        if row.get("final")
     ]
 
-    matched_managed = sum(
-        float(r["final"]["managed_pnl"])
-        for r in finals
+    exited_pending = [
+        row for row in rows
+        if not row.get("final")
+        and row.get("exit")
+    ]
+
+    open_rows = [
+        row for row in rows
+        if not row.get("final")
+        and not row.get("exit")
+    ]
+
+    managed = sum(
+        float(row["final"]["managed_pnl"])
+        for row in finals
     )
-    matched_hold = sum(
-        float(r["final"]["hold_pnl"])
-        for r in finals
+
+    settlement = sum(
+        float(row["final"]["hold_pnl"])
+        for row in finals
     )
+
     pending_exit = sum(
-        float(r["exit"]["pnl"])
-        for r in exited_pending
+        float(row["exit"]["pnl"])
+        for row in exited_pending
     )
 
     a, b = st.columns(2)
 
     a.metric(
         "Matched managed P&L · official",
-        f"${matched_managed:+.2f}",
+        f"${managed:+.2f}",
     )
+
     b.metric(
         "Matched settlement P&L · official",
-        f"${matched_hold:+.2f}",
+        f"${settlement:+.2f}",
     )
 
     a.metric(
         "Paper entries / official outcomes",
         f"{len(rows)} / {len(finals)}",
     )
+
     b.metric(
         "Today · managed realized",
         f"${base.daily_pnl(rows):+.2f}",
@@ -159,11 +180,16 @@ def clearer_paper_metrics(rows):
     a, b, c = st.columns(3)
 
     a.metric("Open positions", len(open_rows))
+
     b.metric(
         "Exited · awaiting settlement",
         len(exited_pending),
     )
-    c.metric("Officially graded", len(finals))
+
+    c.metric(
+        "Officially graded",
+        len(finals),
+    )
 
     st.metric(
         "Estimated exited P&L · pending official result",
@@ -172,15 +198,16 @@ def clearer_paper_metrics(rows):
 
     st.caption(
         "Pending exit P&L uses estimated fills and fees. "
-        "It is NOT included in officially matched totals. "
+        "It is not included in officially matched totals. "
         "No real orders are placed."
     )
 
     if finals:
         wins = sum(
-            float(r["final"]["managed_pnl"]) > 0
-            for r in finals
+            float(row["final"]["managed_pnl"]) > 0
+            for row in finals
         )
+
         st.caption(
             f"Officially matched managed wins: "
             f"{wins}/{len(finals)} "
@@ -189,12 +216,13 @@ def clearer_paper_metrics(rows):
         )
 
 
-# ------------------------------------------------------------
-# PRESERVE FIXED KALSHI QUOTE MAPPING
-# ------------------------------------------------------------
+# ============================================================
+# PRESERVE CORRECT KALSHI ABOVE / BELOW QUOTES
+# ============================================================
 
 def fix_mid_quote_mapping():
-    """Correct ABOVE/BELOW lookups in the existing stage cards."""
+    """Fix quote mapping without modifying the base file."""
+
     source = inspect.getsource(base.qe_stage_row)
 
     replacements = {
@@ -209,11 +237,13 @@ def fix_mid_quote_mapping():
     }
 
     for before, after in replacements.items():
+
         if source.count(before) != 1:
             raise RuntimeError(
                 "MID quote compatibility check failed: "
                 + before
             )
+
         source = source.replace(before, after)
 
     exec(
@@ -222,12 +252,13 @@ def fix_mid_quote_mapping():
     )
 
 
-# ------------------------------------------------------------
-# NEW: SIMPLE QUEEN'S SIGNAL DISPLAY
-# ------------------------------------------------------------
+# ============================================================
+# QUEEN'S SIMPLE SIGNAL ENGINE — DISPLAY ONLY
+# ============================================================
 
 def normalized_direction(value):
-    """Interpret recorded ABOVE/BELOW calls conservatively."""
+    """Translate saved directional calls into UP / DOWN."""
+
     value = str(value or "").strip().upper()
 
     if value in ("ABOVE", "UP", "YES"):
@@ -243,92 +274,113 @@ def queen_signal_state(
     market,
     errors,
     verified,
-    direction,
     reason,
     early,
-    locked,
 ):
-    """Presentation only. Never approves or records a trade."""
+    """Interpret existing analysis without approving new trades."""
 
-    ticker = str((market or {}).get("ticker") or "")
+    ticker = str(
+        (market or {}).get("ticker") or ""
+    )
+
     reason_text = str(reason or "")
-    lower_reason = reason_text.lower()
+    reason_lower = reason_text.lower()
 
     if not ticker.startswith("KXBTC15M-"):
         return (
             "WAIT",
-            "No active BTC 15-minute market",
+            "Waiting for the next BTC market",
             "#F5C96B",
         )
 
-    if errors or not verified:
+    close = base.utc(
+        (market or {}).get("close_time")
+    )
+
+    if close is None:
         return (
             "DATA STALE",
-            "Market quotes are not fully verified",
+            "Market settlement time unavailable",
             "#FF8295",
         )
 
-    if any(
-        phrase in lower_reason
-        for phrase in (
-            "needs refreshing",
-            "unavailable",
-            "stale",
-            "data issue",
-            "candle or quote",
-        )
-    ):
-        return (
-            "DATA STALE",
-            "Waiting for fresh candle and quote data",
-            "#FF8295",
-        )
+    seconds = (
+        close - base.now_utc()
+    ).total_seconds()
 
-    if "no active settlement window" in lower_reason:
+    if seconds <= 0:
         return (
             "WAIT",
             "Market closing or changing rounds",
             "#F5C96B",
         )
 
-    # The base analysis has already verified freshness here.
-    # A candidate is still NOT an approved V4 paper entry.
-    if "setup detected" in lower_reason:
+    if errors or not verified:
+        return (
+            "DATA STALE",
+            "Market quote verification unavailable",
+            "#FF8295",
+        )
+
+    stale_phrases = (
+        "needs refreshing",
+        "unavailable",
+        "stale",
+        "data issue",
+        "candle or quote",
+    )
+
+    if any(
+        phrase in reason_lower
+        for phrase in stale_phrases
+    ):
+        return (
+            "DATA STALE",
+            "Waiting for fresh market data",
+            "#FF8295",
+        )
+
+    # Existing verified V3 candidate detection.
+    # This is not V4 paper entry approval.
+
+    if "setup detected" in reason_lower:
+
         if "ABOVE" in reason_text.upper():
             return (
                 "EARLY UP",
-                "Potential UP setup · entry filters pending",
+                "Bullish setup detected · confirmation pending",
                 "#53E7AB",
             )
 
         if "BELOW" in reason_text.upper():
             return (
                 "EARLY DOWN",
-                "Potential DOWN setup · entry filters pending",
+                "Bearish setup detected · confirmation pending",
                 "#FF8295",
             )
 
-    # Display an existing recorded EARLY call.
-    # Do not convert it into a confirmed paper entry.
+    # Existing saved early calls may be displayed,
+    # but are not treated as new confirmed trades.
+
     early_side = normalized_direction(
-        early.get("call") if isinstance(early, dict) else None
+        early.get("call")
+        if isinstance(early, dict)
+        else None
     )
 
-    if early_side:
-        color = (
-            "#53E7AB"
-            if early_side == "UP"
-            else "#FF8295"
-        )
+    if early_side == "UP":
         return (
-            "EARLY " + early_side,
-            "Recorded early call · V4 entry not confirmed",
-            color,
+            "EARLY UP",
+            "Recorded bullish call · V4 entry not confirmed",
+            "#53E7AB",
         )
 
-    # Existing LOCK records remain visible in the original
-    # EARLY / MID / LOCK row. They do not automatically
-    # become CONFIRMED paper trades here.
+    if early_side == "DOWN":
+        return (
+            "EARLY DOWN",
+            "Recorded bearish call · V4 entry not confirmed",
+            "#FF8295",
+        )
 
     return (
         "WAIT",
@@ -337,59 +389,77 @@ def queen_signal_state(
     )
 
 
-def queen_signal_card(signal, explanation, color):
-    """Large, readable primary signal card."""
+# ============================================================
+# FIXED SIGNAL CARD — NO RAW HTML DISPLAY
+# ============================================================
 
-    signal = escape(str(signal))
-    explanation = escape(str(explanation))
+def queen_signal_card(signal, explanation, color):
+    """Compact Streamlit-compatible signal display."""
+
+    safe_signal = escape(str(signal))
+    safe_explanation = escape(str(explanation))
+
+    # One-line HTML avoids Streamlit Markdown interpreting
+    # indented multiline HTML as a code block.
+
+    html = (
+        '<div style="'
+        'background:linear-gradient(135deg,#29183f,#140c24);'
+        'border:1px solid #70459a;'
+        'border-radius:16px;'
+        'padding:20px 12px;'
+        'text-align:center;'
+        'margin:8px 0 12px 0;'
+        '">'
+        '<div style="'
+        'color:#d8baf3;'
+        'font-size:12px;'
+        'font-weight:800;'
+        'letter-spacing:2px;'
+        '">👑 QUEEN&#39;S SIGNAL</div>'
+        '<div style="'
+        f'color:{color};'
+        'font-size:36px;'
+        'font-weight:900;'
+        'line-height:1.2;'
+        'margin:10px 0;'
+        f'">{safe_signal}</div>'
+        '<div style="'
+        'color:#e1d2ed;'
+        'font-size:13px;'
+        'line-height:1.5;'
+        f'">{safe_explanation}</div>'
+        '</div>'
+    )
 
     st.markdown(
-        f"""
-        <div style="
-            background:linear-gradient(
-                135deg,#251638,#150d25
-            );
-            border:1px solid #69438d;
-            border-radius:17px;
-            padding:19px 12px;
-            text-align:center;
-            margin:8px 0 12px 0;
-        ">
-            <div style="
-                color:#d8baf3;
-                font-size:12px;
-                font-weight:800;
-                letter-spacing:2px;
-            ">
-                👑 QUEEN'S SIGNAL
-            </div>
-
-            <div style="
-                color:{color};
-                font-size:clamp(28px,7vw,46px);
-                font-weight:900;
-                margin:8px 0;
-                line-height:1.15;
-            ">
-                {signal}
-            </div>
-
-            <div style="
-                color:#e1d2ed;
-                font-size:13px;
-                line-height:1.5;
-            ">
-                {explanation}
-            </div>
-        </div>
-        """,
+        html,
         unsafe_allow_html=True,
     )
 
 
-# ------------------------------------------------------------
-# NEW: CLEAN, READABLE HEADER
-# ------------------------------------------------------------
+# ============================================================
+# QUEEN'S NEXT MOVE
+# ============================================================
+
+def next_move_for(signal):
+    """Simple informational guidance, never an order."""
+
+    if signal == "DATA STALE":
+        return "CHECK DATA"
+
+    if signal == "EARLY UP":
+        return "WATCH UP"
+
+    if signal == "EARLY DOWN":
+        return "WATCH DOWN"
+
+    return "WAIT"
+
+
+# ============================================================
+# CLEAN QUEEN'S DASHBOARD HEADER
+# ============================================================
 
 def clear_queen_header(
     market,
@@ -400,9 +470,8 @@ def clear_queen_header(
     early=None,
     locked=None,
 ):
-    """Replace only the visible header, not trading logic."""
+    """Show the answer first, details second."""
 
-    # Reuse the original market analysis and freshness checks.
     direction, old_signal, reason, fresh = (
         base.qe_simple_status(
             market,
@@ -417,16 +486,20 @@ def clear_queen_header(
         market,
         errors,
         verified,
-        direction,
         reason,
         early,
-        locked,
     )
 
-    # Primary signal first.
-    queen_signal_card(signal, explanation, color)
+    # Main Queen's Signal — large and readable.
 
-    # Keep existing EARLY / MID / LOCK tracking visible.
+    queen_signal_card(
+        signal,
+        explanation,
+        color,
+    )
+
+    # Preserve existing EARLY / MID / LOCK records.
+
     base.qe_stage_row(
         market,
         errors,
@@ -435,19 +508,24 @@ def clear_queen_header(
         locked,
     )
 
+    # Clock and settlement countdown.
+
+    now = base.now_utc()
+
     close = base.utc(
         (market or {}).get("close_time")
     )
 
-    now = base.now_utc()
-
     remaining = (
-        max(0, int((close - now).total_seconds()))
+        max(
+            0,
+            int((close - now).total_seconds())
+        )
         if close
         else None
     )
 
-    now_ct = (
+    central_time = (
         now.astimezone(base.CT)
         .strftime("%I:%M:%S %p")
         .lstrip("0")
@@ -457,8 +535,9 @@ def clear_queen_header(
 
     a.metric(
         "🕒 CENTRAL TIME",
-        now_ct,
+        central_time,
     )
+
     b.metric(
         "⏳ SETTLEMENT IN",
         (
@@ -469,6 +548,8 @@ def clear_queen_header(
         ),
     )
 
+    # Market direction and next move.
+
     a, b = st.columns(2)
 
     a.metric(
@@ -476,92 +557,109 @@ def clear_queen_header(
         direction,
     )
 
-    if signal == "DATA STALE":
-        next_move = "REFRESH DATA"
-    elif signal.startswith("EARLY"):
-        next_move = "MONITOR"
-    else:
-        next_move = "WAIT"
-
     b.metric(
         "👑 NEXT MOVE",
-        next_move,
+        next_move_for(signal),
     )
 
-    # Display prices without implying they are approved entries.
-    yes = (
-        base.quote(fresh, "ABOVE", "ask")
-        if fresh
-        else None
-    )
-    no = (
-        base.quote(fresh, "BELOW", "ask")
-        if fresh
-        else None
-    )
+    # Technical details stay in the background.
 
     with st.expander(
         "📊 Market prices & signal details",
         expanded=False,
     ):
+
+        yes = (
+            base.quote(fresh, "ABOVE", "ask")
+            if fresh
+            else None
+        )
+
+        no = (
+            base.quote(fresh, "BELOW", "ask")
+            if fresh
+            else None
+        )
+
         a, b = st.columns(2)
 
         a.metric(
             "ABOVE · ASK",
-            f"{yes * 100:.1f}¢"
-            if yes is not None
-            else "—",
+            (
+                f"{yes * 100:.1f}¢"
+                if yes is not None
+                else "—"
+            ),
         )
 
         b.metric(
             "BELOW · ASK",
-            f"{no * 100:.1f}¢"
-            if no is not None
-            else "—",
+            (
+                f"{no * 100:.1f}¢"
+                if no is not None
+                else "—"
+            ),
         )
 
-        st.write("Market direction:", direction)
-        st.write("Queen's signal:", signal)
-        st.write("Analysis detail:", reason)
+        st.write(
+            "Market direction:",
+            direction,
+        )
+
+        st.write(
+            "Queen's signal:",
+            signal,
+        )
+
+        st.write(
+            "Analysis detail:",
+            reason,
+        )
 
         st.caption(
-            "EARLY signals are observations, not approved "
-            "paper entries. Recorded LOCK calls are shown "
-            "separately. V4 entry approval and paper P&L "
-            "remain in Advanced Tools."
+            "EARLY calls are observations, not approved "
+            "V4 paper entries. Existing LOCK records "
+            "remain separate. No real orders."
         )
 
     st.caption(
-        "👑 Paper observation only · "
-        "No real orders · "
+        "👑 QUEEN'S EDGE | 254 · "
+        "Paper observation only · "
         "Signals are not guarantees."
     )
 
 
-# ------------------------------------------------------------
-# APPLY PRESERVED FIXES + NEW PRESENTATION
-# ------------------------------------------------------------
+# ============================================================
+# APPLY PATCHES WITHOUT CHANGING BASE STRATEGY
+# ============================================================
 
 base.PaperJournal.rows = all_paper_rows
+
 base.paper_metrics = clearer_paper_metrics
 
 try:
     fix_mid_quote_mapping()
+
 except (OSError, TypeError, RuntimeError) as exc:
+
     st.error(
         "Compatibility check failed. "
-        "No trading logic was changed: " + str(exc)
+        "Original trading logic was not changed: "
+        + str(exc)
     )
+
     st.stop()
 
-# The preview base injects this function into the original
-# dashboard. Replace only that display function.
+
+# Replace only the original visible header function.
+# The base scanner, filters and P&L continue unchanged.
+
 base.qe_simple_header = clear_queen_header
 
 
-# ------------------------------------------------------------
-# LAUNCH EXISTING DASHBOARD
-# ------------------------------------------------------------
+# ============================================================
+# LAUNCH QUEEN'S EDGE
+# ============================================================
 
 if __name__ == "__main__":
     base.launch()
