@@ -1,4 +1,6 @@
+
 streamlit>=1.40
 requests>=2.32
 streamlit-autorefresh>=1.0.1
 plotly
+cryptography>=44.0
