@@ -376,7 +376,6 @@ class PaperJournal:
 def journal(url, key):
     return PaperJournal(url, key)
 
-
 def exit_estimate(entry, market):
     bid = quote(market, entry['side'], 'bid')
     ask = quote(market, entry['side'], 'ask')
@@ -748,7 +747,6 @@ def paper_metrics(rows):
         y.metric('Total recorded entries', len(rows))
         st.caption('Only V4 entries included. Shadow and near-miss observations are separate. Estimated paper fills and fees, not real trades.')
 
-
 def guidance_panel(market, verified, quote_fn, candle_fn, rows):
     """Paper-only, conservative guidance. No orders or automatic execution."""
     st.markdown('#### 👑 Trade guidance · paper only')
@@ -1083,7 +1081,6 @@ def paper_history(rows):
             'are never backfilled. Fills and fees are estimates. '
             'V4 is separate from Early, Locked, WATCH and V2 history.'
         )
-
 
 def near_miss_observe(
     store, market, result, quote_at, trade_time, multiplier
@@ -1481,7 +1478,6 @@ def shadow_v1_report(store):
         with st.expander('Shadow V1 · full observation details', expanded=False):
             st.dataframe(output, hide_index=True, use_container_width=True)
 
-
 def evaluate_papers(
     store,
     rows,
@@ -1839,7 +1835,6 @@ HIGH_MIN_ASK = 0.70
 HIGH_MAX_ASK = 0.90
 HIGH_TP_MIN_NET = 0.01  # Net positive after modeled fees/slippage, not gross.
 
-
 def high_price_rows(store):
     items = store.request('POST', '/object/list/' + BUCKET, {
         'prefix': 'high_price_entries', 'limit': 200, 'offset': 0,
@@ -1927,9 +1922,7 @@ def high_price_scan(store, market, verified, quote_fn, candle_fn, v4_rows):
 
     # Preserve V4's contract-wide entry lock; shadow study can observe the
     # same market but cannot be counted as a second V4 position.
-    if not 180 <= seconds <= 600:
-        st.session_state.pop('qe_high_confirm', None)
-        return 'WAIT · Outside 10–3 minute observation window'
+    # Observe throughout the active contract; V4 retains its own window.
     if df is None or len(df) < 60:
         return 'WAIT · Insufficient 1-minute candle history'
     result = assess(fresh, fresh.get('floor_strike'), spot, df, seconds,
@@ -1998,6 +1991,7 @@ def high_price_report(store, message):
     c.metric('Closed / open', f'{len(completed)} / {pending}')
     d.metric('Observations', len(rows))
     st.caption(message + ' · 70–90¢ entry ask; up to $5 modeled risk. '
+               'Checks throughout active contracts while the app is running. '
                'Exit is simulated at observed bid minus 1¢ and estimated fees. '
                'Not guaranteed executable fills; never real orders.')
     with st.expander('High-price paper history', expanded=False):
@@ -2163,6 +2157,8 @@ def render_paper_engine(*args, **kwargs):
         expanded=False,
     ):
         _run_paper_engine(*args, **kwargs)
+
+
 def compact_chart_html(html):
     """Reset old Advanced Mode preferences on startup."""
     html = html.replace(
@@ -2252,6 +2248,8 @@ requestResize();
         )
 
     return html
+
+
 def clean_chart_renderer(path):
     """Apply compact defaults without overwriting the chart module."""
     tree = ast.parse(
@@ -2352,6 +2350,8 @@ def expander_node(nodes, label):
     wrapper.end_lineno = nodes[-1].end_lineno
     wrapper.end_col_offset = nodes[-1].end_col_offset
     return wrapper
+
+
 def compact_original(source):
     """Collapse display sections while preserving their execution."""
     tree = ast.parse(source)
@@ -2462,6 +2462,8 @@ def compact_original(source):
     ]
 
     return ast.fix_missing_locations(tree)
+
+
 def qe_simple_status(market, errors, quote_fn, candle_fn, verified):
     """Conservative summary; no new strategy or order logic."""
     ticker = str((market or {}).get('ticker') or '')
@@ -2555,6 +2557,8 @@ def qe_stage_row(market, errors, verified, early, locked):
         card('🔒 LOCK', lock_value, lock_note)
     st.caption('MID is a provisional Kalshi quote lean, not a saved prediction. '
                'EARLY and LOCK reflect existing recorded paper calls.')
+
+
 def qe_simple_header(market, errors, quote_fn, candle_fn, verified, early=None, locked=None):
     """Only essentials above the chart; other tools stay collapsible."""
     qe_stage_row(market, errors, verified, early, locked)
@@ -2600,6 +2604,8 @@ tick();setInterval(tick,200);
     c, d = st.columns(2)
     c.metric('🟢 ABOVE · ASK', f'{yes*100:.1f}¢' if yes is not None else '—')
     d.metric('🔴 BELOW · ASK', f'{no*100:.1f}¢' if no is not None else '—')
+
+
 def launch():
     # Keep the existing fragment scanner and all Streamlit status/error UI.
     # Only counteract the stale-element fade during fragment rerenders.
@@ -2752,12 +2758,3 @@ def launch():
 
 if __name__ == '__main__':
     launch()
-
-
-
-
-
-
-
-
-
