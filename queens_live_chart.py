@@ -277,7 +277,7 @@ input{accent-color:#b77dff}
  </button>
 
  <span class="muted" id="modeDescription">
-  EMA 9/21 · target · reversal arrows
+  EMA 9/21 · Royal Signals · target
  </span>
 
  <span class="muted" id="contract"></span>
@@ -315,7 +315,7 @@ input{accent-color:#b77dff}
 
  <label>
   <input type="checkbox" data-key="markers" checked>
-  Reversal arrows
+  Royal Signals arrows
  </label>
 </div>
 
@@ -351,8 +351,8 @@ input{accent-color:#b77dff}
  <span>🟣 EMA 9</span>
  <span>🔵 EMA 21</span>
  <span>🟡 Target snapshot</span>
- <span style="color:#75f2be">▲ WATCH UP</span>
- <span style="color:#ff91a9">▼ WATCH DOWN</span>
+ <span style="color:#75f2be">▲ BUY UP</span>
+ <span style="color:#ff91a9">▼ BUY DOWN</span>
 </div>
 
 <div id="notice" role="status" aria-live="polite">
@@ -769,7 +769,7 @@ function syncPanels(){
  $('modeDescription').textContent=
   advancedMode
    ?'Choose your extra indicators'
-   :'EMA 9/21 · target · reversal arrows';
+   :'EMA 9/21 · Royal Signals · target';
 
  const panels={
   volume:'volumePanel',
@@ -811,197 +811,92 @@ function syncPanels(){
  requestResize();
 }
 
+// ROYAL-STYLE SIGNAL ENGINE — calculated locally, paper only.
+// Uses closed 1-minute candles. This is NOT a direct TradingView connection.
+// The V6.9 script and this chart must be compared during paper testing.
+let royalState={side:null,signal:'WAIT',reason:'Collecting candles',scoreUp:0,scoreDown:0};
 function detectReversals(close,e9,e21,rv,mc){
  const out=[];
-
- if(expired())return out;
-
- let lastUp=-1000;
- let lastDown=-1000;
-
- for(let i=52;i<bars.length;i++){
-  const values=[
-   close[i],
-   close[i-1],
-   e9[i],
-   e9[i-1],
-   e9[i-2],
-   rv[i],
-   rv[i-1],
-   mc.hist[i],
-   mc.hist[i-1]
-  ];
-
-  if(!values.every(Number.isFinite))continue;
-
-  if(bars[i].time-bars[i-2].time!==120)continue;
-  // Never label a reversal across a missing 1-minute candle.
-  if(i<59||bars[i].time-bars[i-59].time!==59*60)continue;
-
-  const slope=e9[i]-e9[i-1];
-  const previousSlope=e9[i-1]-e9[i-2];
-
-  const up=
-   previousSlope<=0&&
-   slope>0&&
-   close[i]>close[i-1]&&
-   rv[i]>rv[i-1]&&
-   mc.hist[i]>mc.hist[i-1];
-
-  const down=
-   previousSlope>=0&&
-   slope<0&&
-   close[i]<close[i-1]&&
-   rv[i]<rv[i-1]&&
-   mc.hist[i]<mc.hist[i-1];
-
-  if(up&&i-lastUp>=5){
-   out.push({
-    time:bars[i].time,
-    position:'belowBar',
-    color:'#25d9a4',
-    shape:'arrowUp',
-    text:'WATCH UP',
-    direction:'UP'
-   });
-
-   lastUp=i;
-  }
-
-  if(down&&i-lastDown>=5){
-   out.push({
-    time:bars[i].time,
-    position:'aboveBar',
-    color:'#ff547c',
-    shape:'arrowDown',
-    text:'WATCH DOWN',
-    direction:'DOWN'
-   });
-
-   lastDown=i;
+ const end=bars.length-1; // latest candle may still be developing
+ const start=Math.max(60,end-300);
+ let side=null, lastEntry=-1000;
+ let signal='WAIT', reason='No qualified closed-candle signal';
+ let scoreUp=0, scoreDown=0;
+ const contractStart=Number.isFinite(CONFIG.closeMs)
+  ?Math.floor((CONFIG.closeMs/1000-900)/60)*60 : -Infinity;
+ for(let i=start;i<end;i++){
+  if(bars[i].time<contractStart)continue;
+  if(bars[i].time-bars[i-59].time!==59*60)continue;
+  if(![close[i],e9[i],e21[i],rv[i],rv[i-1],e9[i-1],mc.hist[i],mc.hist[i-1]].every(Number.isFinite))continue;
+  const rsiAvg=rv.slice(Math.max(0,i-13),i+1).filter(Number.isFinite);
+  const avg=rsiAvg.length===14?rsiAvg.reduce((a,b)=>a+b,0)/14:50;
+  const rising=close[i]>close[i-1];
+  const falling=close[i]<close[i-1];
+  const up=(close[i]>e9[i]?1:0)+(e9[i]>e21[i]?1:0)+(rv[i]>50?1:0)+(rv[i]>avg?1:0)+(rising?1:0);
+  const down=(close[i]<e9[i]?1:0)+(e9[i]<e21[i]?1:0)+(rv[i]<50?1:0)+(rv[i]<avg?1:0)+(falling?1:0);
+  scoreUp=up;scoreDown=down;
+  const upReady=up>=4&&up>down&&e9[i]>=e9[i-1];
+  const downReady=down>=4&&down>up&&e9[i]<=e9[i-1];
+  const entryAllowed=i-lastEntry>=5;
+  if(side==='UP'&&(down>=4||e9[i]<e21[i]||rv[i]<48)){
+   out.push({time:bars[i].time,position:'aboveBar',color:amber,shape:'circle',text:'CASH OUT UP'});
+   side=null;signal='CASH OUT UP';reason='UP setup weakened';
+  }else if(side==='DOWN'&&(up>=4||e9[i]>e21[i]||rv[i]>52)){
+   out.push({time:bars[i].time,position:'belowBar',color:amber,shape:'circle',text:'CASH OUT DOWN'});
+   side=null;signal='CASH OUT DOWN';reason='DOWN setup weakened';
+  }else if(side===null&&entryAllowed&&upReady){
+   out.push({time:bars[i].time,position:'belowBar',color:green,shape:'arrowUp',text:'BUY UP'});
+   side='UP';lastEntry=i;signal='BUY UP';reason='UP score '+up+'/5 on closed candle';
+  }else if(side===null&&entryAllowed&&downReady){
+   out.push({time:bars[i].time,position:'aboveBar',color:red,shape:'arrowDown',text:'BUY DOWN'});
+   side='DOWN';lastEntry=i;signal='BUY DOWN';reason='DOWN score '+down+'/5 on closed candle';
+  }else if(side==='UP'&&down>=3){
+   signal='EARLY REVERSAL';reason='DOWN pressure building against UP';
+  }else if(side==='DOWN'&&up>=3){
+   signal='EARLY REVERSAL';reason='UP pressure building against DOWN';
+  }else if(side){
+   signal='HOLD '+side;reason='Position direction still supported';
+  }else{
+   signal='WAIT';reason='UP '+up+'/5 · DOWN '+down+'/5';
   }
  }
-
+ royalState={side,signal,reason,scoreUp,scoreDown};
  return out;
 }
-
 function updateNotice(){
  const notice=$('notice');
-
- let text='';
- let color=amber;
-
- if(!fresh()){
-  text=
-   'WAIT · BTC trade timestamp is stale or unavailable. '+
-   'New reversal warnings are paused.';
- }else if(expired()){
-  text=
-   'TARGET EXPIRED · Refresh the dashboard for the new '+
-   'Kalshi contract. Reversal warnings paused.';
- }else if(TARGET===null){
-  text=
-   'WAIT · Kalshi target unavailable. '+
-   'No target-based warning can be evaluated.';
- }else if(bars.length<60||!cached){
-  text=
-   'WAIT · Need 60 real, recent candles before '+
-   'evaluating reversal warnings.';
- }else if(recentGap()){
-  text=
-   'WAIT · Recent candle history has a gap. '+
-   'Indicators may be incomplete; warnings paused.';
- }else if(
-  Date.now()/1000-bars.at(-1).time>120
- ){
-  text=
-   'WAIT · Latest candle is stale. Warnings paused.';
- }else{
-  const current=ticks.at(-1);
-
-  const old=current
-   ?ticks.filter(
-     t=>t.time<=current.time-20
-    ).at(-1)
-   :null;
-
-  const distance=bars.at(-1).close-TARGET;
-
-  const loss=old&&current
-   ?Math.abs(old.price-TARGET)-
-    Math.abs(current.price-TARGET)
-   :0;
-
-  const shrinking=old&&
-   loss>Math.max(
-    8,
-    Math.abs(old.price-TARGET)*.20
-   );
-
-  const i=bars.length-1;
-
-  const cross=i>0&&
-   (cached.e9[i]-cached.e21[i])*
-   (cached.e9[i-1]-cached.e21[i-1])<0;
-
-  const latest=markers.at(-1);
-
-  const recent=latest&&
-   latest.time>=bars.at(-1).time-120;
-
-  if(shrinking){
-   text=
-    '⚠ CUSHION SHRINKING · Spot moved '+
-    fmt(loss)+
-    ' toward the target in about 20 seconds. '+
-    'Review reversal risk.';
-  }else if(cross){
-   text=
-    '⚠ EMA FLIP · EMA 9 crossed EMA 21 on the '+
-    'developing candle. Confirmation can change '+
-    'before close.';
-  }else if(recent){
-   const up=latest.direction==='UP';
-
-   text=
-    (up?'▲ WATCH UP':'▼ WATCH DOWN')+
-    ' · Possible momentum turn on the 1-minute chart. '+
-    'Experimental warning, not a confirmed entry.';
-
-   color=up?green:red;
+ let text='',color=amber;
+ if(!fresh())text='WAIT · Coinbase trade feed stale. Signals paused.';
+ else if(expired())text='CONTRACT EXPIRED · Await dashboard contract update. No new signals.';
+ else if(TARGET===null)text='WAIT · Kalshi target unavailable; settlement assessment paused.';
+ else if(bars.length<61||!cached)text='WAIT · Loading at least 61 one-minute candles.';
+ else if(recentGap())text='WAIT · Missing candles; signals paused.';
+ else if(Date.now()/1000-bars.at(-1).time>120)text='WAIT · Candle feed stale; signals paused.';
+ else{
+  const r=royalState;
+  text=r.signal+' · '+r.reason+' · UP '+r.scoreUp+'/5 · DOWN '+r.scoreDown+'/5';
+  if(r.signal==='BUY UP'||r.signal==='HOLD UP')color=green;
+  else if(r.signal==='BUY DOWN'||r.signal==='HOLD DOWN')color=red;
+  const price=ticks.at(-1)?.price??bars.at(-1).close;
+  const distance=price-TARGET;
+  const old=ticks.filter(t=>t.time<=ticks.at(-1).time-20).at(-1);
+  if(old&&Math.abs(old.price-TARGET)-Math.abs(distance)>Math.max(8,Math.abs(old.price-TARGET)*.2)){
+   text='⚠ CUSHION SHRINKING · BTC moved toward target · '+text;
+   color=amber;
   }else if(Math.abs(distance)<25){
-   text=
-    '⚠ TARGET DANGER ZONE · Spot is within $25 of '+
-    'the target. Small moves can change the apparent side.';
-  }else{
-   text=
-    'WAIT · No active reversal warning. This does not '+
-    'confirm that the current side will settle.';
+   text='⚠ TARGET DANGER ZONE · Within $25 of target · '+text;
+   color=amber;
   }
  }
-
  notice.textContent=text;
  notice.style.color=color;
-
  const current=ticks.at(-1);
-
- const old=current
-  ?ticks.filter(
-    t=>t.time<=current.time-20
-   ).at(-1)
-  :null;
-
+ const old=current?ticks.filter(t=>t.time<=current.time-20).at(-1):null;
  if(old&&current){
   const d=current.price-old.price;
-
-  $('momentum').textContent=
-   (d>=0?'+':'−')+fmt(Math.abs(d));
-
-  $('momentum').style.color=
-   d>=0?green:red;
- }else{
-  $('momentum').textContent='Collecting…';
- }
+  $('momentum').textContent=(d>=0?'+':'−')+fmt(Math.abs(d));
+  $('momentum').style.color=d>=0?green:red;
+ }else $('momentum').textContent='Collecting…';
 }
 
 function put(name,data,full){
@@ -1176,9 +1071,8 @@ function calculate(){
    ?rv[i].toFixed(1)
    :'—';
 
- // Retain historical arrows from verified contiguous periods.
- // The gap warning still blocks new actionable WATCH notices.
- markers=bars.length>=60
+ // Closed-candle Royal-style markers; no actual Kalshi orders.
+ markers=bars.length>=61
   ?detectReversals(close,e9,e21,rv,mc)
   :[];
 
@@ -1851,7 +1745,7 @@ requestResize();
 </body>
 </html>'''
 
-    # Keep the live WATCH status above the main chart.
+    # Keep the live Royal Signals status above the main chart.
     notice_start = html.find('<div id="notice"')
 
     if notice_start >= 0:
@@ -1876,7 +1770,7 @@ requestResize();
     html = html.replace(
         "</head>",
         '<style>#notice{margin:8px 0}'
-        '#notice::before{content:"REVERSAL WATCH STATUS";'
+        '#notice::before{content:"ROYAL SIGNALS · PAPER ONLY";'
         'display:block;font-size:10px;letter-spacing:1px;'
         'color:#cbb5e8;margin-bottom:4px}</style></head>',
         1,
