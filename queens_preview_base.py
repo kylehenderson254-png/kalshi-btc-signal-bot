@@ -27,9 +27,9 @@ BUCKET = 'queens-edge-paper-v4'
 CT = ZoneInfo('America/Chicago')
 
 RISK = 5.0
-ENTRY_CAP = 0.66  # Effective fill including 1c slippage; 45-65c displayed ask
+ENTRY_CAP = 0.61  # Effective fill including 1c slippage; 45-60c displayed ask
 MIN_ASK = 0.45
-MAX_ASK = 0.65
+MAX_ASK = 0.60
 SHADOW_TARGETS = (0.70, 0.75, 0.80)
 SLIPPAGE = 0.01
 TAKE_PROFIT = 0.25
@@ -562,7 +562,7 @@ def candidate(market, result, df, spot, multiplier):
 
     if not MIN_ASK <= ask <= MAX_ASK or not 0 < price <= ENTRY_CAP:
         return None, [
-            'Entry must be 45–65¢ ask, with 1¢ estimated adverse slippage'
+            'Entry must be 45–60¢ ask, with 1¢ estimated adverse slippage'
         ]
 
     qty, entry_fee, risk = size_for(price, multiplier)
@@ -1798,7 +1798,7 @@ def evaluate_papers(
         'fee_model': (
             'Estimated quadratic taker, whole-cent assumed fills'
         ),
-        'strategy': 'V4-settlement-45-65-shadow-v2',
+        'strategy': 'V4-settlement-45-60-shadow-v2',
         'take_profit_fraction': TAKE_PROFIT,
         'loss_review_fraction': STOP_REVIEW,
         'entry_cap': ENTRY_CAP,
@@ -2559,9 +2559,49 @@ def qe_stage_row(market, errors, verified, early, locked):
                'EARLY and LOCK reflect existing recorded paper calls.')
 
 
+
+def qe_performance_center():
+    """Read-only visible V4 scoreboard; never combines hypothetical shadow returns."""
+    st.markdown('#### 👑 QUEEN’S PERFORMANCE CENTER')
+    try:
+        url = st.secrets.get('SUPABASE_URL')
+        key = st.secrets.get('SUPABASE_SERVICE_ROLE_KEY')
+        if not url or not key:
+            st.info('V4 performance unavailable: private paper journal not configured.')
+            return
+        rows = journal(str(url), str(key)).rows()
+    except Exception:
+        st.warning('V4 performance temporarily unavailable. Saved history has not been changed.')
+        return
+    finals = [r for r in rows if r.get('final')]
+    values = [number(r['final'].get('managed_pnl')) or 0.0 for r in finals]
+    wins = sum(v > 0 for v in values)
+    losses = sum(v < 0 for v in values)
+    a,b,c,d,e = st.columns(5, gap='small')
+    a.metric('V4 paper P&L', f'${sum(values):+.2f}')
+    b.metric('Wins', wins)
+    c.metric('Losses', losses)
+    d.metric('Win rate', f'{wins/len(finals):.1%}' if finals else '—')
+    e.metric('Total paper entries', len(rows))
+    st.caption(f'{len(finals)} graded · {len(rows)-len(finals)} pending · Estimated paper results, not real trades. Shadow studies are excluded.')
+    t1,t2,t3 = st.tabs(['V4 PAPER RESULTS', 'TRADE HISTORY', 'SHADOW / STRATEGY RESULTS'])
+    with t1:
+        settlement = sum(number(r['final'].get('hold_pnl')) or 0 for r in finals)
+        x,y = st.columns(2)
+        x.metric('Hold-to-settlement net', f'${settlement:+.2f}')
+        y.metric('Today managed net', f'${daily_pnl(rows):+.2f}')
+    with t2:
+        if rows:
+            paper_history(rows)
+        else:
+            st.caption('No V4 paper entries recorded yet.')
+    with t3:
+        st.caption('Shadow and strategy studies are hypothetical and remain separate from V4 P&L. Existing tracker reports and saved observations are preserved in the dashboard.')
+
 def qe_simple_header(market, errors, quote_fn, candle_fn, verified, early=None, locked=None):
     """Only essentials above the chart; other tools stay collapsible."""
     qe_stage_row(market, errors, verified, early, locked)
+    qe_performance_center()
     close = utc((market or {}).get('close_time'))
     now = now_utc()
     remaining = max(0, int((close - now).total_seconds())) if close else None
@@ -2570,40 +2610,33 @@ def qe_simple_header(market, errors, quote_fn, candle_fn, verified, early=None, 
     # the next normal dashboard execution, not via this browser timer.
     import streamlit.components.v1 as components
     close_ms = int(close.timestamp() * 1000) if close else None
+    direction, signal, reason, fresh = qe_simple_status(market, errors, quote_fn, candle_fn, verified)
+    yes = quote(fresh, 'ABOVE', 'ask') if fresh else None
+    no = quote(fresh, 'BELOW', 'ask') if fresh else None
+    from html import escape as _escape
+    def _ask_text(value):
+        return f'{value*100:.1f}¢' if value is not None and 0 <= value <= 1 else '—'
+    close_json = json.dumps(close_ms)
     clock_html = """<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 *{box-sizing:border-box}html,body{margin:0;background:transparent;color:#ead7fa;font-family:system-ui,-apple-system,sans-serif}
-.wrap{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:2px 1px 4px}
-.card{background:linear-gradient(110deg,#1b1030,#211331);border:1px solid #583677;border-radius:15px;padding:16px 14px;min-height:100px}
-.label{font-size:14px;opacity:.85;white-space:nowrap}.value{font-size:clamp(23px,4vw,32px);font-weight:800;margin-top:10px;letter-spacing:.2px;font-variant-numeric:tabular-nums}
-@media(max-width:400px){.wrap{gap:7px}.card{padding:12px 9px;min-height:92px}.label{font-size:11px}.value{font-size:21px}}
-</style></head><body>
-<div class="wrap"><div class="card"><div class="label">🕒 CENTRAL TIME</div><div class="value" id="ct">--:--:--</div></div>
-<div class="card"><div class="label">⏳ SETTLEMENT IN</div><div class="value" id="settle">--:--</div></div></div>
-<script>
-const closeMs=__CLOSE_MS__;
-const fmt=new Intl.DateTimeFormat('en-US',{timeZone:'America/Chicago',hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true});
-function tick(){
- const now=Date.now();document.getElementById('ct').textContent=fmt.format(new Date(now));
- const el=document.getElementById('settle');
- if(closeMs===null){el.textContent='—';return;}
- const secs=Math.max(0,Math.ceil((closeMs-now)/1000));
- el.textContent=String(Math.floor(secs/60)).padStart(2,'0')+':'+String(secs%60).padStart(2,'0');
-}
-tick();setInterval(tick,200);
-</script></body></html>""".replace('__CLOSE_MS__', json.dumps(close_ms))
-    components.html(clock_html, height=116, scrolling=False)
-    direction, signal, reason, fresh = qe_simple_status(market, errors, quote_fn, candle_fn, verified)
+.wrap{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:2px 1px 4px}
+.card{background:linear-gradient(110deg,#1b1030,#211331);border:1px solid #583677;border-radius:12px;padding:12px 9px;min-height:82px;text-align:center}
+.label{font-size:clamp(10px,1.8vw,13px);opacity:.9}.value{font-size:clamp(18px,3.4vw,28px);font-weight:800;margin-top:7px;font-variant-numeric:tabular-nums}
+.up{border-color:#198e60;color:#75efb3}.down{border-color:#b63d5a;color:#ffa3b7}
+</style></head><body><div class="wrap">
+<div class="card"><div class="label">⏳ SETTLEMENT IN</div><div class="value" id="settle">--:--</div></div>
+<div class="card up"><div class="label">🟢 ABOVE ASK</div><div class="value">__YES__</div></div>
+<div class="card down"><div class="label">🔴 BELOW ASK</div><div class="value">__NO__</div></div>
+</div><script>const closeMs=__CLOSE_MS__;function tick(){const el=document.getElementById('settle');if(closeMs===null){el.textContent='—';return;}const secs=Math.max(0,Math.ceil((closeMs-Date.now())/1000));el.textContent=String(Math.floor(secs/60)).padStart(2,'0')+':'+String(secs%60).padStart(2,'0');}tick();setInterval(tick,250);</script></body></html>"""
+    clock_html = (clock_html.replace('__CLOSE_MS__', close_json)
+                  .replace('__YES__', _escape(_ask_text(yes)))
+                  .replace('__NO__', _escape(_ask_text(no))))
+    components.html(clock_html, height=100, scrolling=False)
     a, b = st.columns(2)
     a.metric('📉 MARKET DIRECTION', direction)
     b.metric('👑 QUEEN’S SIGNAL', signal)
     st.caption(reason + ' · Paper observation only; no automatic orders.')
-    yes = quote(fresh, 'ABOVE', 'ask') if fresh else None
-    no = quote(fresh, 'BELOW', 'ask') if fresh else None
-    # The helper quote uses live Kalshi dollar quotes; never fabricate a price.
-    c, d = st.columns(2)
-    c.metric('🟢 ABOVE · ASK', f'{yes*100:.1f}¢' if yes is not None else '—')
-    d.metric('🔴 BELOW · ASK', f'{no*100:.1f}¢' if no is not None else '—')
 
 
 def launch():
