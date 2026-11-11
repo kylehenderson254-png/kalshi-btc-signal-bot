@@ -27,9 +27,9 @@ BUCKET = 'queens-edge-paper-v4'
 CT = ZoneInfo('America/Chicago')
 
 RISK = 5.0
-ENTRY_CAP = 0.61  # Effective fill including 1c slippage; 45-60c displayed ask
+ENTRY_CAP = 0.66  # Effective fill including 1c slippage; 45-65c displayed ask
 MIN_ASK = 0.45
-MAX_ASK = 0.60
+MAX_ASK = 0.65
 SHADOW_TARGETS = (0.70, 0.75, 0.80)
 SLIPPAGE = 0.01
 TAKE_PROFIT = 0.25
@@ -293,6 +293,21 @@ class PaperJournal:
 
         return self.cache[path]
 
+    def verify_saved(self, folder, key, expected):
+        """Remote read-after-write verification; never trust the local cache."""
+        path = folder + '/' + key
+        remote = self.request(
+            'GET', '/object/authenticated/' + BUCKET + '/' + path,
+            missing=True,
+        )
+        if not isinstance(remote, dict) or remote != expected:
+            raise RuntimeError(
+                'Paper journal read-back failed for ' + folder
+                + '; scanner stopped to prevent an unverified entry'
+            )
+        self.cache[path] = remote
+        return remote
+
     def once(self, folder, key, value):
         result = self.request(
             'POST',
@@ -306,10 +321,9 @@ class PaperJournal:
                 raise RuntimeError(
                     'Could not verify the existing paper event'
                 )
-            return existing
+            return self.verify_saved(folder, key, existing)
 
-        self.cache[folder + '/' + key] = value
-        return value
+        return self.verify_saved(folder, key, value)
 
     def control(self):
         # Mutable settings bypass the immutable-event cache.
@@ -371,6 +385,21 @@ class PaperJournal:
 
         with ThreadPoolExecutor(max_workers=6) as pool:
             return list(pool.map(load, names))
+
+
+def journal_diagnostic(store):
+    """Write/read a harmless diagnostic object; never create a trade."""
+    key = 'readback-v1.json'
+    payload = {'kind': 'paper-journal-diagnostic', 'version': 1}
+    stored = store.once('diagnostics', key, payload)
+    store.verify_saved('diagnostics', key, stored)
+    # Settlement arithmetic test, independent of live Kalshi outcome.
+    qty, fee_estimate, risk = size_for(0.66, 1.0)
+    assert qty > 0 and risk <= RISK + 1e-9
+    win_net = round(qty - risk, 6)
+    loss_net = round(-risk, 6)
+    assert win_net > loss_net
+    return 'Storage read/write verified · settlement math checked (synthetic only)'
 
 
 def journal(url, key):
@@ -516,10 +545,13 @@ def grade_papers(store, rows):
 
 def candidate(market, result, df, spot, multiplier):
     if result.get('status') != 'CANDIDATE':
-        return None, list(
-            result.get('reasons')
-            or ['V3 candidate conditions did not pass']
-        )
+        reasons = list(result.get('reasons') or ['V3 candidate conditions did not pass'])
+        side = result.get('side')
+        if side in ('ABOVE', 'BELOW'):
+            ask = quote(market, side, 'ask')
+            if ask is not None and not MIN_ASK <= ask <= MAX_ASK:
+                reasons.insert(0, f'{side} ask {ask*100:.0f}¢ outside V4 45–65¢ entry range')
+        return None, reasons
 
     side = result.get('side')
     if df is None or len(df) < 60 or 'time' not in df:
@@ -562,7 +594,7 @@ def candidate(market, result, df, spot, multiplier):
 
     if not MIN_ASK <= ask <= MAX_ASK or not 0 < price <= ENTRY_CAP:
         return None, [
-            'Entry must be 45–60¢ ask, with 1¢ estimated adverse slippage'
+            'Entry must be 45–65¢ ask, with 1¢ estimated adverse slippage'
         ]
 
     qty, entry_fee, risk = size_for(price, multiplier)
@@ -954,6 +986,8 @@ def scan_status(kind, message, reasons=None):
     health.update(
         last=now_utc().isoformat(),
         message=message,
+        kind=kind,
+        latest_reasons=list(reasons or []),
     )
 
     if kind == 'ERROR':
@@ -1005,6 +1039,24 @@ def scan_status(kind, message, reasons=None):
             hide_index=True,
             use_container_width=True,
         )
+def visible_scanner_status():
+    """Small, always-visible explanation without another dropdown."""
+    health = st.session_state.get('qe_v4_health') or {}
+    kind = health.get('kind', 'WAIT')
+    last = utc(health.get('last'))
+    when = last.astimezone(CT).strftime('%I:%M:%S %p CT') if last else 'Not scanned yet'
+    message = str(health.get('message') or 'Waiting for first paper scan.')
+    reasons = health.get('latest_reasons') or []
+    st.markdown('**🧪 PAPER SCANNER · ' + kind + '**')
+    st.caption('Last check: ' + when + ' · ' + message)
+    if reasons:
+        st.caption('Why no trade? ' + '; '.join(map(str, reasons[:3])))
+    elif kind == 'ENTRY':
+        st.caption('Saved entry verified by a fresh journal read-back.')
+    elif kind == 'ERROR':
+        st.caption('Paper recording paused until the storage or data issue is resolved.')
+
+
 def paper_history(rows):
     with st.expander(
         'V4 paper history · compare the same entries',
@@ -1798,7 +1850,7 @@ def evaluate_papers(
         'fee_model': (
             'Estimated quadratic taker, whole-cent assumed fills'
         ),
-        'strategy': 'V4-settlement-45-60-shadow-v2',
+        'strategy': 'V4-settlement-45-65-shadow-v2',
         'take_profit_fraction': TAKE_PROFIT,
         'loss_review_fraction': STOP_REVIEW,
         'entry_cap': ENTRY_CAP,
@@ -1809,6 +1861,8 @@ def evaluate_papers(
     }
 
     saved = store.once('entries', file_key, entry)
+    # A second uncached remote read confirms the entry before it is counted.
+    saved = store.verify_saved('entries', file_key, saved)
 
     rows.insert(
         0,
@@ -1830,7 +1884,7 @@ def evaluate_papers(
         f"· risk ${saved['risk']:.2f}. No order was sent.",
         [],
     )
-# Independent high-price paper experiment. V4 and historical journals stay unchanged.
+# Independent high-price paper experiment. V4 and historical journals stay separate.
 HIGH_MIN_ASK = 0.70
 HIGH_MAX_ASK = 0.90
 HIGH_TP_MIN_NET = 0.01  # Net positive after modeled fees/slippage, not gross.
@@ -2031,7 +2085,7 @@ def _run_paper_engine(
     )
 
     st.caption(
-        'Settlement test: preferred ask 45–60¢; $5 maximum including fees; '
+        'Settlement test: preferred ask 45–65¢; $5 maximum including fees; '
         'spread ≤3¢; '
         '1¢ adverse slippage; two eligible observations at least '
         '10 seconds apart. Hold until settlement; shadow 70/75/80¢ exits. '
@@ -2053,6 +2107,8 @@ def _run_paper_engine(
         store = journal(str(url), str(key))
         store.ensure(create=True)
         enabled = paper_enabled(store)
+        if st.button('Verify paper journal · no trade', key='qe_v4_journal_test'):
+            st.success(journal_diagnostic(store))
 
         rows = store.rows()
         grade_papers(store, rows)
@@ -2152,6 +2208,7 @@ def render_paper_engine(*args, **kwargs):
         rows,
     )
 
+    visible_scanner_status()
     with st.expander(
         '🧪 Paper test · controls, P&L & history',
         expanded=False,
@@ -2600,6 +2657,9 @@ def qe_performance_center():
 
 def qe_simple_header(market, errors, quote_fn, candle_fn, verified, early=None, locked=None):
     """Only essentials above the chart; other tools stay collapsible."""
+    qe_stage_row(market, errors, verified, early, locked)
+    qe_performance_center()
+    visible_scanner_status()
     close = utc((market or {}).get('close_time'))
     now = now_utc()
     remaining = max(0, int((close - now).total_seconds())) if close else None
@@ -2631,8 +2691,6 @@ def qe_simple_header(market, errors, quote_fn, candle_fn, verified, early=None, 
                   .replace('__YES__', _escape(_ask_text(yes)))
                   .replace('__NO__', _escape(_ask_text(no))))
     components.html(clock_html, height=100, scrolling=False)
-    qe_stage_row(market, errors, verified, early, locked)
-    qe_performance_center()
     a, b = st.columns(2)
     a.metric('📉 MARKET DIRECTION', direction)
     b.metric('👑 QUEEN’S SIGNAL', signal)
