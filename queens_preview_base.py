@@ -2600,8 +2600,6 @@ def qe_performance_center():
 
 def qe_simple_header(market, errors, quote_fn, candle_fn, verified, early=None, locked=None):
     """Only essentials above the chart; other tools stay collapsible."""
-    qe_stage_row(market, errors, verified, early, locked)
-    qe_performance_center()
     close = utc((market or {}).get('close_time'))
     now = now_utc()
     remaining = max(0, int((close - now).total_seconds())) if close else None
@@ -2633,6 +2631,8 @@ def qe_simple_header(market, errors, quote_fn, candle_fn, verified, early=None, 
                   .replace('__YES__', _escape(_ask_text(yes)))
                   .replace('__NO__', _escape(_ask_text(no))))
     components.html(clock_html, height=100, scrolling=False)
+    qe_stage_row(market, errors, verified, early, locked)
+    qe_performance_center()
     a, b = st.columns(2)
     a.metric('📉 MARKET DIRECTION', direction)
     b.metric('👑 QUEEN’S SIGNAL', signal)
