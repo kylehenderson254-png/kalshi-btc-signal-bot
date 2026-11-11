@@ -2457,7 +2457,7 @@ def compact_original(source):
     tree.body[tab_start:tab_end] = [
         expander_node(
             tree.body[tab_start:tab_end],
-            '📚 Performance, history & diagnostics',
+            '👑 Queen’s Performance Center · results, history & diagnostics',
         )
     ]
 
@@ -2651,7 +2651,7 @@ def launch():
         st.stop()
     source = source.replace(
         chart_anchor,
-        chart_anchor + '\n    qe_chart_slot = st.container()',
+        '    qe_chart_slot = st.container()',
         1,
     )
 
@@ -2705,7 +2705,7 @@ def launch():
             'qe_seconds, verified_direction(market) if market else False, '
             'quote, btc_candles, bool(errors.get(series)))\n'
             '    with qe_chart_slot:\n'
-            '        st.markdown("#### 📈 LIVE BITCOIN · STREAMING CHART")\n'
+            ''
             '        render_live_chart(strike, close_time=qe_close, '
             'market_ticker=market.get("ticker") if market else None)\n'
             '    with st.expander("📉 Original historical chart · Backup", '
