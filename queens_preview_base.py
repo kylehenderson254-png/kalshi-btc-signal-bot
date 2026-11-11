@@ -27,9 +27,9 @@ BUCKET = 'queens-edge-paper-v4'
 CT = ZoneInfo('America/Chicago')
 
 RISK = 5.0
-ENTRY_CAP = 0.61  # Effective fill including 1c slippage; 45-60c displayed ask
+ENTRY_CAP = 0.66  # Effective fill including 1c slippage; 45-65c displayed ask
 MIN_ASK = 0.45
-MAX_ASK = 0.60
+MAX_ASK = 0.65
 SHADOW_TARGETS = (0.70, 0.75, 0.80)
 SLIPPAGE = 0.01
 TAKE_PROFIT = 0.25
@@ -562,7 +562,7 @@ def candidate(market, result, df, spot, multiplier):
 
     if not MIN_ASK <= ask <= MAX_ASK or not 0 < price <= ENTRY_CAP:
         return None, [
-            'Entry must be 45–60¢ ask, with 1¢ estimated adverse slippage'
+            'Entry must be 45–65¢ ask, with 1¢ estimated adverse slippage'
         ]
 
     qty, entry_fee, risk = size_for(price, multiplier)
@@ -1798,7 +1798,7 @@ def evaluate_papers(
         'fee_model': (
             'Estimated quadratic taker, whole-cent assumed fills'
         ),
-        'strategy': 'V4-settlement-45-60-shadow-v2',
+        'strategy': 'V4-settlement-45-65-shadow-v2',
         'take_profit_fraction': TAKE_PROFIT,
         'loss_review_fraction': STOP_REVIEW,
         'entry_cap': ENTRY_CAP,
@@ -2457,7 +2457,7 @@ def compact_original(source):
     tree.body[tab_start:tab_end] = [
         expander_node(
             tree.body[tab_start:tab_end],
-            '👑 Queen’s Performance Center · results, history & diagnostics',
+            '📚 Performance, history & diagnostics',
         )
     ]
 
@@ -2551,10 +2551,24 @@ def qe_stage_row(market, errors, verified, early, locked):
     a, b, c = st.columns(3, gap='small')
     with a:
         card('🌅 EARLY', early_value, 'Recorded call' if early else 'Awaiting signal')
+        with st.popover('ⓘ', help='Why EARLY is waiting'):
+            if early:
+                st.write('EARLY is showing the recorded call for this contract.')
+            else:
+                st.write('No EARLY call has been recorded for this contract. This does not prove a specific indicator failed; check the Early tracker for the actual reason, if available.')
     with b:
         card('⚡ MID', mid_value, mid_note)
+        with st.popover('ⓘ', help='Why MID is waiting'):
+            st.write(mid_note)
+            st.caption('MID is a provisional quote-based lean, not a saved prediction.')
     with c:
         card('🔒 LOCK', lock_value, lock_note)
+        with st.popover('ⓘ', help='Why LOCK is waiting'):
+            if locked:
+                st.write('Recorded lock status: ' + lock_note)
+                st.caption('A pending lock is not a verified settlement result.')
+            else:
+                st.write('No LOCK call has been recorded for this contract. Consult the lock tracker for an actual blocking reason, if available.')
     st.caption('MID is a provisional Kalshi quote lean, not a saved prediction. '
                'EARLY and LOCK reflect existing recorded paper calls.')
 
@@ -2651,7 +2665,7 @@ def launch():
         st.stop()
     source = source.replace(
         chart_anchor,
-        '    qe_chart_slot = st.container()',
+        chart_anchor + '\n    qe_chart_slot = st.container()',
         1,
     )
 
@@ -2705,7 +2719,7 @@ def launch():
             'qe_seconds, verified_direction(market) if market else False, '
             'quote, btc_candles, bool(errors.get(series)))\n'
             '    with qe_chart_slot:\n'
-            ''
+            '        st.markdown("#### 📈 LIVE BITCOIN · STREAMING CHART")\n'
             '        render_live_chart(strike, close_time=qe_close, '
             'market_ticker=market.get("ticker") if market else None)\n'
             '    with st.expander("📉 Original historical chart · Backup", '
