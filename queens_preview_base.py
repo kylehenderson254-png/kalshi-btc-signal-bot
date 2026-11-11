@@ -2551,24 +2551,10 @@ def qe_stage_row(market, errors, verified, early, locked):
     a, b, c = st.columns(3, gap='small')
     with a:
         card('🌅 EARLY', early_value, 'Recorded call' if early else 'Awaiting signal')
-        with st.popover('ⓘ', help='Why EARLY is waiting'):
-            if early:
-                st.write('EARLY is showing the recorded call for this contract.')
-            else:
-                st.write('No EARLY call has been recorded for this contract. This does not prove a specific indicator failed; check the Early tracker for the actual reason, if available.')
     with b:
         card('⚡ MID', mid_value, mid_note)
-        with st.popover('ⓘ', help='Why MID is waiting'):
-            st.write(mid_note)
-            st.caption('MID is a provisional quote-based lean, not a saved prediction.')
     with c:
         card('🔒 LOCK', lock_value, lock_note)
-        with st.popover('ⓘ', help='Why LOCK is waiting'):
-            if locked:
-                st.write('Recorded lock status: ' + lock_note)
-                st.caption('A pending lock is not a verified settlement result.')
-            else:
-                st.write('No LOCK call has been recorded for this contract. Consult the lock tracker for an actual blocking reason, if available.')
     st.caption('MID is a provisional Kalshi quote lean, not a saved prediction. '
                'EARLY and LOCK reflect existing recorded paper calls.')
 
