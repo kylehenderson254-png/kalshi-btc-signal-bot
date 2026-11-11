@@ -90,7 +90,7 @@ html,body{
 
 #summary{
  display:grid;
- grid-template-columns:repeat(7,minmax(0,1fr));
+ grid-template-columns:repeat(4,minmax(0,1fr));
  gap:7px;
  padding:8px;
  background:#160f2c;
@@ -192,6 +192,7 @@ input{accent-color:#b77dff}
 }
 
 #notice{
+ display:none;
  padding:9px 10px;
  border:1px solid #694b84;
  border-radius:8px;
@@ -264,6 +265,10 @@ input{accent-color:#b77dff}
  <div class="tile">
   <div class="muted">Feed / trade age</div>
   <div class="value" id="status">Connecting…</div>
+ </div>
+ <div class="tile">
+  <div class="muted">👑 CALL · paper signal</div>
+  <div class="value" id="queenCall" role="status" aria-live="polite">WAIT</div>
  </div>
 </div>
 
@@ -890,6 +895,14 @@ function updateNotice(){
  }
  notice.textContent=text;
  notice.style.color=color;
+ const call=$('queenCall');
+ if(call){
+  const blocked=!fresh()||expired()||TARGET===null||bars.length<61||!cached||recentGap()||Date.now()/1000-bars.at(-1).time>120;
+  const signal=blocked?'WAIT':royalState.signal;
+  call.textContent=signal;
+  call.style.color=signal==='BUY UP'||signal==='HOLD UP'?green:signal==='BUY DOWN'||signal==='HOLD DOWN'?red:amber;
+  call.title=text;
+ }
  const current=ticks.at(-1);
  const old=current?ticks.filter(t=>t.time<=current.time-20).at(-1):null;
  if(old&&current){
@@ -1744,37 +1757,6 @@ requestResize();
 </script>
 </body>
 </html>'''
-
-    # Keep the live Royal Signals status above the main chart.
-    notice_start = html.find('<div id="notice"')
-
-    if notice_start >= 0:
-        notice_end = html.find("</div>", notice_start)
-
-        if notice_end >= 0:
-            notice_end += len("</div>")
-
-            notice_html = html[notice_start:notice_end]
-
-            html = (
-                html[:notice_start]
-                + html[notice_end:]
-            )
-
-            html = html.replace(
-                '<div class="panel">',
-                notice_html + '\n<div class="panel">',
-                1,
-            )
-
-    html = html.replace(
-        "</head>",
-        '<style>#notice{margin:8px 0}'
-        '#notice::before{content:"ROYAL SIGNALS · PAPER ONLY";'
-        'display:block;font-size:10px;letter-spacing:1px;'
-        'color:#cbb5e8;margin-bottom:4px}</style></head>',
-        1,
-    )
 
     try:
         frame_height = max(
