@@ -2112,6 +2112,7 @@ def _run_paper_engine(
 
         rows = store.rows()
         grade_papers(store, rows)
+        royal_live_status(store, market, candle_fn, enabled)
 
         kind, message, reasons = evaluate_papers(
             store,
@@ -2617,9 +2618,167 @@ def qe_stage_row(market, errors, verified, early, locked):
 
 
 
+
+# ROYAL SCALP V1: independent forward-only, paper-only experiment.
+# It does not alter V4 settlement positions, the V4 journal, or real orders.
+def royal_objects(store, folder):
+    result = store.request('POST', '/object/list/' + BUCKET, {
+        'prefix': folder, 'limit': 200, 'offset': 0,
+        'sortBy': {'column': 'name', 'order': 'desc'},
+    })
+    if not isinstance(result, list):
+        raise RuntimeError('Royal scalp journal listing failed')
+    names = [r['name'] for r in result if str(r.get('name', '')).endswith('.json')]
+    return [(name, store.get(folder, name)) for name in names]
+
+
+def royal_metrics(store):
+    entries = royal_objects(store, 'royal_scalp_entries')
+    exits = {k: v for k, v in royal_objects(store, 'royal_scalp_exits')}
+    closed = [(k, e, exits[k]) for k, e in entries if k in exits]
+    pnls = [float(x['pnl']) for _, _, x in closed]
+    a, b, c, d = st.columns(4)
+    a.metric('Scalp paper net', f'${sum(pnls):+.2f}')
+    b.metric('Scalp wins', sum(x > 0 for x in pnls))
+    c.metric('Scalp losses', sum(x < 0 for x in pnls))
+    d.metric('Scalp open / closed', f'{len(entries)-len(closed)} / {len(closed)}')
+    st.caption('Independent forward-only paper estimates; observed quotes, estimated fees and slippage, no actual fills.')
+    if closed:
+        with st.expander('Royal scalp paper history', expanded=False):
+            st.dataframe([{
+                'Contract': e.get('ticker'), 'Side': e.get('side'),
+                'Entry ask': e.get('ask'), 'Exit bid': x.get('bid'),
+                'Net P&L': x.get('pnl'), 'Exit': x.get('reason'),
+            } for _, e, x in closed], use_container_width=True)
+    return entries, exits
+
+
+def royal_momentum(df):
+    import pandas as pd
+    if df is None or len(df) < 30:
+        raise RuntimeError('Need at least 30 recent 1-minute candles')
+    t = pd.to_datetime(df['time'].tail(30), utc=True, errors='coerce')
+    gaps = t.diff().dt.total_seconds().dropna()
+    if t.isna().any() or t.duplicated().any() or not gaps.between(45, 90).all():
+        raise RuntimeError('Candles have gaps; no scalp entry')
+    if (now_utc() - t.iloc[-1].to_pydatetime()).total_seconds() > 100:
+        raise RuntimeError('Last 1-minute candle is stale')
+    close = pd.to_numeric(df['close'], errors='coerce')
+    if close.tail(30).isna().any():
+        raise RuntimeError('Missing BTC candle prices')
+    fast = close.ewm(span=9, adjust=False).mean()
+    slow = close.ewm(span=21, adjust=False).mean()
+    diff = close.diff()
+    gain = diff.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+    loss = (-diff.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+    last_loss = float(loss.iloc[-1])
+    rsi = 100.0 if last_loss == 0 else 100 - 100/(1+float(gain.iloc[-1])/last_loss)
+    up = sum([close.iloc[-1] > fast.iloc[-1], fast.iloc[-1] > slow.iloc[-1],
+              fast.iloc[-1] > fast.iloc[-3], rsi > 52])
+    down = sum([close.iloc[-1] < fast.iloc[-1], fast.iloc[-1] < slow.iloc[-1],
+                fast.iloc[-1] < fast.iloc[-3], rsi < 48])
+    return ('ABOVE' if up >= 3 and up > down else
+            'BELOW' if down >= 3 and down > up else None), up, down, rsi
+
+
+def royal_scan(store, market, candle_fn, enabled):
+    ticker = str((market or {}).get('ticker') or '')
+    if not ticker.startswith('KXBTC15M-'):
+        return 'WAIT · No active BTC 15-minute contract'
+    entries = royal_objects(store, 'royal_scalp_entries')
+    exits = {k: v for k, v in royal_objects(store, 'royal_scalp_exits')}
+    # Read existing entries first; never open two positions on one contract.
+    open_positions = [(k, e) for k, e in entries if k not in exits]
+    fresh, quote_at, spot, trade_at = fresh_snapshot(ticker)
+    close = utc(fresh.get('close_time'))
+    remaining = (close - now_utc()).total_seconds() if close else -1
+    if not snapshot_current(quote_at, trade_at):
+        return 'WAIT · Quote or BTC trade timestamp stale'
+    if fresh.get('status') != 'active' or remaining <= 0:
+        return 'WAIT · Contract closed; no simulated exit without a valid bid'
+    df, _, feed_errors, _ = _get_candles(candle_fn)
+    if feed_errors:
+        return 'WAIT · Candle feed health warning'
+    try:
+        side, up, down, rsi = royal_momentum(df)
+    except Exception as exc:
+        return 'WAIT · ' + str(exc)
+    multiplier = series_fee()
+    for key, entry in open_positions:
+        if entry.get('ticker') != ticker:
+            # Never carry a paper position into a different contract.
+            # No fabricated settlement P&L: pending until official grading.
+            continue
+        estimate = exit_estimate(entry, fresh)
+        if estimate is None:
+            return 'HOLD · Waiting for valid exit bid and depth'
+        reversal = side is not None and side != entry['side']
+        profit = estimate['pnl'] >= max(0.05, entry['risk'] * 0.12)
+        loss = estimate['pnl'] <= -entry['risk'] * 0.20
+        near_close = remaining <= 90
+        if not (profit or loss or reversal or near_close):
+            return f'HOLD {entry["side"]} · Est. cash-out ${estimate["pnl"]:+.2f}'
+        reason = ('Profit review' if profit else 'Risk exit' if loss else
+                  'Momentum reversal' if reversal else 'Contract ending')
+        event = {
+            'ticker': ticker, 'side': entry['side'], 'bid': quote(fresh, entry['side'], 'bid'),
+            'exit_price': estimate['price'], 'exit_fee': estimate['fee'],
+            'pnl': estimate['pnl'], 'reason': reason, 'at': now_utc().isoformat(),
+            'kind': 'ROYAL_SCALP_SIMULATED_EXIT',
+        }
+        store.once('royal_scalp_exits', key, event)
+        return f'CASH OUT {entry["side"]} · Paper ${estimate["pnl"]:+.2f} · {reason}'
+    if not enabled:
+        return 'PAUSED · Paper switch disabled'
+    if entries and any(e.get('ticker') == ticker for _, e in entries):
+        return 'WAIT · One scalp paper entry per contract'
+    if not 90 < remaining < 850:
+        return 'WAIT · Need at least 90 seconds before settlement'
+    if side is None:
+        return f'WAIT · Momentum not aligned (UP {up}/4, DOWN {down}/4, RSI {rsi:.0f})'
+    ask, bid = quote(fresh, side, 'ask'), quote(fresh, side, 'bid')
+    if ask is None or bid is None or not 0 < bid <= ask < 1:
+        return 'WAIT · No valid two-sided contract quotes'
+    if not 0.08 <= ask <= 0.90 or ask-bid > 0.05:
+        return f'WAIT · {side} ask {ask*100:.0f}¢ or spread too costly'
+    price = cents_round(ask + SLIPPAGE)
+    qty, entry_fee, risk = size_for(price, multiplier)
+    depth = available(fresh, side, 'ask')
+    if qty < 1 or depth is None or depth < qty:
+        return 'WAIT · Insufficient quote depth within $5 risk'
+    # Avoid paper entries with no meaningful theoretical upside after fees.
+    max_profit = qty - risk
+    if max_profit < max(0.10, risk * 0.10):
+        return 'WAIT · Upside too small relative to paper risk'
+    if not snapshot_current(quote_at, trade_at):
+        return 'WAIT · Quote aged before paper entry'
+    key = ticker.replace('/', '_') + '.json'
+    event = {
+        'ticker': ticker, 'side': side, 'ask': ask, 'bid': bid,
+        'price': price, 'qty': qty, 'entry_fee': entry_fee,
+        'fee_multiplier': multiplier, 'risk': risk, 'slippage': SLIPPAGE,
+        'target': number(fresh.get('floor_strike')), 'at': now_utc().isoformat(),
+        'kind': 'ROYAL_SCALP_SIMULATED_ENTRY',
+    }
+    store.once('royal_scalp_entries', key, event)
+    return f'BUY {side} · Paper {qty} contracts at {price*100:.0f}¢ (ask {ask*100:.0f}¢)'
+
+
+def royal_live_status(store, market, candle_fn, enabled):
+    try:
+        message = royal_scan(store, market, candle_fn, enabled)
+        st.session_state['royal_scalp_status'] = message
+        return message
+    except Exception as exc:
+        message = 'WAIT · Royal scalp scanner unavailable: ' + str(exc)
+        st.session_state['royal_scalp_status'] = message
+        return message
+
+
 def qe_performance_center():
     """Read-only visible V4 scoreboard; never combines hypothetical shadow returns."""
     st.markdown('#### 👑 QUEEN’S PERFORMANCE CENTER')
+    st.caption('⚡ ROYAL SCALP · independent paper strategy | 🔒 ROYAL LOCK · selective settlement calls')
     try:
         url = st.secrets.get('SUPABASE_URL')
         key = st.secrets.get('SUPABASE_SERVICE_ROLE_KEY')
@@ -2630,6 +2789,13 @@ def qe_performance_center():
     except Exception:
         st.warning('V4 performance temporarily unavailable. Saved history has not been changed.')
         return
+    st.markdown('**⚡ ROYAL SCALP · PAPER RESULTS**')
+    try:
+        royal_metrics(journal(str(url), str(key)))
+    except Exception:
+        st.caption('Scalp journal not yet available; no results invented.')
+    st.caption(st.session_state.get('royal_scalp_status', 'Scalp scanner waiting for first live observation.'))
+    st.markdown('**🔒 ROYAL LOCK / V4 SETTLEMENT · PAPER RESULTS**')
     finals = [r for r in rows if r.get('final')]
     values = [number(r['final'].get('managed_pnl')) or 0.0 for r in finals]
     wins = sum(v > 0 for v in values)
@@ -2653,7 +2819,7 @@ def qe_performance_center():
         else:
             st.caption('No V4 paper entries recorded yet.')
     with t3:
-        st.caption('Shadow and strategy studies are hypothetical and remain separate from V4 P&L. Existing tracker reports and saved observations are preserved in the dashboard.')
+        st.caption('Royal scalp results are independent from V4 settlement results. Old Shadow and strategy studies remain separate.')
 
 def qe_simple_header(market, errors, quote_fn, candle_fn, verified, early=None, locked=None):
     """Only essentials above the chart; other tools stay collapsible."""
