@@ -1,10 +1,9 @@
 
-"""QUEEN'S EDGE | 254 — Royal Scalp Season 2.
+"""QUEEN'S EDGE | 254
+Automatic Kalshi rollover + Royal Scalp Season 2
 
-PAPER ONLY. NO REAL ORDERS.
-
-New scoreboard; old journal records preserved.
-Original scalp entry and exit logic remains unchanged.
+PAPER ONLY — NO REAL ORDERS.
+Preserves existing journal and trading calculations.
 """
 
 from pathlib import Path
@@ -12,13 +11,51 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent / "queens_preview_base.py"
 
 if not BASE.is_file():
-    raise FileNotFoundError(
-        "Missing queens_preview_base.py beside app.py"
-    )
+    raise FileNotFoundError("Missing queens_preview_base.py")
 
 source = BASE.read_text(encoding="utf-8")
 
-# Preserve the working dashboard function fix.
+# -----------------------------------------
+# 1. RESTORE AUTOMATIC CONTRACT REFRESH
+# -----------------------------------------
+
+# The preview disabled the original whole-page
+# refresh. Restore it so each run retrieves the
+# latest Kalshi contract and target.
+#
+# This is a reliability-first fix. The Streamlit
+# page may briefly redraw on each refresh.
+
+disabled_refresh = (
+    "source = source.replace(full_page_timer, "
+    "'# Whole-page refresh disabled in preview; "
+    "V4 fragment runs independently.', 1)"
+)
+
+enabled_refresh = (
+    "source = source.replace("
+    "full_page_timer, "
+    "'st_autorefresh(interval=15_000, "
+    "limit=None, key=\"qe_contract_rollover\")', "
+    "1)"
+)
+
+if source.count(disabled_refresh) != 1:
+    raise RuntimeError(
+        "Rollover compatibility check failed. "
+        "Your dashboard files were not changed."
+    )
+
+source = source.replace(
+    disabled_refresh,
+    enabled_refresh,
+    1,
+)
+
+# -----------------------------------------
+# 2. PRESERVE WORKING DASHBOARD FUNCTIONS
+# -----------------------------------------
+
 anchor = "        'qe_simple_header': qe_simple_header,\n"
 
 replacement = (
@@ -29,15 +66,22 @@ replacement = (
 )
 
 if source.count(anchor) != 1:
-    raise RuntimeError("Dashboard launcher version mismatch")
+    raise RuntimeError(
+        "Dashboard function compatibility check failed"
+    )
 
 source = source.replace(anchor, replacement, 1)
 
-# Keep the previous results function available.
+# -----------------------------------------
+# 3. PRESERVE ROYAL SCALP SEASON 2
+# -----------------------------------------
+
 old_metrics = "def royal_metrics(store):"
 
 if source.count(old_metrics) != 1:
-    raise RuntimeError("Royal Scalp metrics function not found")
+    raise RuntimeError(
+        "Original Royal Scalp metrics function not found"
+    )
 
 source = source.replace(
     old_metrics,
@@ -45,8 +89,7 @@ source = source.replace(
     1,
 )
 
-# Inject Season 2 reporting without changing royal_scan.
-extension = r'''
+season_code = r'''
 
 from datetime import datetime as _qe_datetime
 from datetime import timezone as _qe_timezone
@@ -72,32 +115,42 @@ def qe_season_timestamp(value):
 
 
 def qe_season_entries(store):
-    entries = royal_objects(store, 'royal_scalp_entries')
     result = []
 
-    for key, entry in entries:
+    for key, entry in royal_objects(
+        store, 'royal_scalp_entries'
+    ):
         if not isinstance(entry, dict):
             continue
 
-        stamp = qe_season_timestamp(entry.get('at'))
+        stamp = qe_season_timestamp(
+            entry.get('at')
+        )
 
-        if stamp is not None and stamp >= QE_SEASON_2_START:
+        if (
+            stamp is not None
+            and stamp >= QE_SEASON_2_START
+        ):
             result.append((key, entry))
 
     return result
 
 
 def qe_season_settlements(store, entries, exits):
-    """Reconcile expired paper positions from official results.
+    """Grade expired positions from official results.
 
-    Never create a fake cash-out or alter a saved scalp exit.
+    Never invent a simulated exit bid.
     """
+
     existing = dict(
-        royal_objects(store, 'royal_scalp_season2_finals')
+        royal_objects(
+            store,
+            'royal_scalp_season2_finals'
+        )
     )
 
-    checked = 0
     warnings = []
+    checked = 0
 
     for key, entry in entries:
         if key in exits or key in existing:
@@ -106,27 +159,32 @@ def qe_season_settlements(store, entries, exits):
         if checked >= 4:
             break
 
-        ticker = str(entry.get('ticker') or '')
+        ticker = str(
+            entry.get('ticker') or ''
+        )
 
         if not ticker.startswith('KXBTC15M-'):
-            warnings.append('Invalid contract: ' + ticker)
+            warnings.append(
+                'Invalid ticker: ' + ticker
+            )
             continue
 
         try:
-            # Retrieve the actual close time from Kalshi.
             market = public_get(
                 '/markets/' + ticker
             )['market']
 
-            close = utc(market.get('close_time'))
+            close = utc(
+                market.get('close_time')
+            )
 
             if close is None:
-                warnings.append(
-                    'Missing close time: ' + ticker
-                )
                 continue
 
-            if now_utc().timestamp() < close.timestamp() + 60:
+            if (
+                now_utc().timestamp()
+                < close.timestamp() + 60
+            ):
                 continue
 
             checked += 1
@@ -135,19 +193,25 @@ def qe_season_settlements(store, entries, exits):
                 market.get('status') or ''
             ).lower()
 
-            outcome = str(
+            result = str(
                 market.get('result') or ''
             ).lower()
 
             if (
-                status not in ('settled', 'finalized')
-                or outcome not in ('yes', 'no')
+                status not in (
+                    'settled', 'finalized'
+                )
+                or result not in ('yes', 'no')
             ):
                 continue
 
             side = entry.get('side')
-            qty = int(entry.get('qty') or 0)
-            risk = number(entry.get('risk'))
+            qty = int(
+                entry.get('qty') or 0
+            )
+            risk = number(
+                entry.get('risk')
+            )
 
             if (
                 side not in ('ABOVE', 'BELOW')
@@ -156,13 +220,20 @@ def qe_season_settlements(store, entries, exits):
                 or risk <= 0
             ):
                 warnings.append(
-                    'Invalid entry accounting: ' + ticker
+                    'Invalid entry accounting: '
+                    + ticker
                 )
                 continue
 
             won = (
-                (side == 'ABOVE' and outcome == 'yes')
-                or (side == 'BELOW' and outcome == 'no')
+                (
+                    side == 'ABOVE'
+                    and result == 'yes'
+                )
+                or (
+                    side == 'BELOW'
+                    and result == 'no'
+                )
             )
 
             pnl = round(
@@ -173,17 +244,13 @@ def qe_season_settlements(store, entries, exits):
             record = {
                 'ticker': ticker,
                 'side': side,
-                'result': outcome,
+                'result': result,
                 'won': won,
                 'qty': qty,
                 'risk': risk,
                 'pnl': pnl,
                 'at': now_utc().isoformat(),
                 'kind': 'OFFICIAL_PAPER_SETTLEMENT',
-                'note': (
-                    'Official settlement, not a simulated '
-                    'cash-out or real trade.'
-                ),
             }
 
             existing[key] = store.once(
@@ -201,22 +268,25 @@ def qe_season_settlements(store, entries, exits):
 
 
 def royal_metrics(store):
-    """Season 2 scoreboard; original records are not deleted."""
-    st.markdown('##### 👑 ROYAL SCALP · SEASON 2')
+    """Season 2 results, without deleting history."""
+
+    st.markdown(
+        '##### 👑 ROYAL SCALP · SEASON 2'
+    )
+
     st.caption(
-        'Started November 11, 2026 at 10:00 PM Central. '
-        'Earlier results remain in the original journal.'
+        'Started November 11, 2026 at '
+        '10:00 PM Central. '
+        'Previous paper results remain archived.'
     )
 
     entries = qe_season_entries(store)
 
-    all_exits = dict(
-        royal_objects(store, 'royal_scalp_exits')
-    )
-
     exits = {
         key: event
-        for key, event in all_exits.items()
+        for key, event in royal_objects(
+            store, 'royal_scalp_exits'
+        )
         if isinstance(event, dict)
     }
 
@@ -232,10 +302,12 @@ def royal_metrics(store):
             event = exits[key]
             kind = 'SIMULATED CASH OUT'
             pnl = number(event.get('pnl'))
+
         elif key in finals:
             event = finals[key]
             kind = 'OFFICIAL SETTLEMENT'
             pnl = number(event.get('pnl'))
+
         else:
             open_rows.append((key, entry))
             continue
@@ -269,33 +341,32 @@ def royal_metrics(store):
         if row['Net P&L'] is not None
     ]
 
-    wins = sum(value > 0 for value in values)
-    losses = sum(value < 0 for value in values)
+    wins = sum(v > 0 for v in values)
+    losses = sum(v < 0 for v in values)
 
     a, b, c, d = st.columns(4)
 
     a.metric(
         'Season 2 net',
-        f'${sum(values):+.2f}',
+        f'${sum(values):+.2f}'
     )
     b.metric('Wins', wins)
     c.metric('Losses', losses)
     d.metric(
         'Open / completed',
-        f'{len(open_rows)} / {len(completed)}',
+        f'{len(open_rows)} / {len(completed)}'
     )
 
     st.caption(
-        f'{len(entries)} Season 2 entries recorded · '
-        f'{len(values)} graded or closed · '
-        'Estimated paper fills and fees. '
-        'No real orders.'
+        f'{len(entries)} Season 2 entries · '
+        f'{len(completed)} completed · '
+        'Paper-only estimated results.'
     )
 
     if open_rows:
         with st.expander(
-            'Open / awaiting settlement',
-            expanded=False,
+            'Open / unresolved positions',
+            expanded=False
         ):
             st.dataframe(
                 [
@@ -305,7 +376,7 @@ def royal_metrics(store):
                         'Entry UTC': entry.get('at'),
                         'Entry ask': entry.get('ask'),
                         'Risk $': entry.get('risk'),
-                        'Status': 'OPEN / UNRESOLVED',
+                        'Status': 'UNRESOLVED',
                     }
                     for _, entry in open_rows
                 ],
@@ -315,7 +386,7 @@ def royal_metrics(store):
 
     with st.expander(
         'Season 2 · complete trade history',
-        expanded=False,
+        expanded=False
     ):
         if completed:
             st.dataframe(
@@ -331,7 +402,7 @@ def royal_metrics(store):
     if warnings:
         with st.expander(
             'Tracker verification warnings',
-            expanded=False,
+            expanded=False
         ):
             for warning in warnings:
                 st.caption(warning)
@@ -343,16 +414,25 @@ def royal_metrics(store):
 insertion = "def royal_momentum(df):"
 
 if source.count(insertion) != 1:
-    raise RuntimeError("Royal Scalp insertion point not found")
+    raise RuntimeError(
+        "Royal Scalp insertion point not found"
+    )
 
 source = source.replace(
     insertion,
-    extension + "\n" + insertion,
+    season_code + "\n" + insertion,
     1,
 )
 
-# Check syntax before running the existing dashboard.
-program = compile(source, str(BASE), "exec")
+# -----------------------------------------
+# 4. VALIDATE AND LAUNCH
+# -----------------------------------------
+
+program = compile(
+    source,
+    str(BASE),
+    "exec"
+)
 
 environment = {
     "__name__": "__main__",
