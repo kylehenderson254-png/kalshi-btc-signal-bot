@@ -2823,9 +2823,6 @@ def qe_performance_center():
 
 def qe_simple_header(market, errors, quote_fn, candle_fn, verified, early=None, locked=None):
     """Only essentials above the chart; other tools stay collapsible."""
-    qe_stage_row(market, errors, verified, early, locked)
-    qe_performance_center()
-    visible_scanner_status()
     close = utc((market or {}).get('close_time'))
     now = now_utc()
     remaining = max(0, int((close - now).total_seconds())) if close else None
@@ -2965,6 +2962,11 @@ def launch():
             '        st.markdown("#### 📈 LIVE BITCOIN · STREAMING CHART")\n'
             '        render_live_chart(strike, close_time=qe_close, '
             'market_ticker=market.get("ticker") if market else None)\n'
+            '    qe_stage_row(market, errors, verified_direction(market) if market else False, '
+            'early_map.get(market.get("ticker")) if market else None, '
+            'locked_map.get(market.get("ticker")) if market else None)\n'
+            '    qe_performance_center()\n'
+            '    visible_scanner_status()\n'
             '    with st.expander("📉 Original historical chart · Backup", '
             'expanded=False):\n'
             '        frame = btc_candles()\n'
