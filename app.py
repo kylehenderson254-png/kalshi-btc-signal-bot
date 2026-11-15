@@ -820,6 +820,21 @@ if source.count(board_anchor) != 1:
     raise RuntimeError("Kalshi version mismatch: scoreboard insertion")
 source = source.replace(board_anchor, board_code + board_anchor, 1)
 
+
+# RECOVERY: Show the comparison above the background paper engine.
+# The live chart remains in its reserved slot; no paper rules are modified.
+_old_board_position = "            '    qe_performance_center()\\n'\n            '    visible_scanner_status()\\n'"
+_new_board_position = "            '    visible_scanner_status()\\n'"
+if source.count(_old_board_position) != 1:
+    raise RuntimeError("Recovery compatibility check: scoreboard location changed")
+source = source.replace(_old_board_position, _new_board_position, 1)
+
+_old_engine_position = "            '    with st.expander(\"⚙️ Advanced Tools · paper P&L, diagnostics & history\", expanded=False):\\n'"
+_new_engine_position = "            '    qe_performance_center()\\n'\n" + _old_engine_position
+if source.count(_old_engine_position) != 1:
+    raise RuntimeError("Recovery compatibility check: paper engine location changed")
+source = source.replace(_old_engine_position, _new_engine_position, 1)
+
 # ==================================================
 # 7. START EXISTING DASHBOARD
 # ==================================================
