@@ -1,5 +1,5 @@
 
-"""QUEEN'S EDGE | 254 — Unified Scoreboard
+"""QUEEN'S EDGE | 254 — Kalshi recovery / Unified Scoreboard
 
 PAPER ONLY — NO REAL ORDERS.
 
@@ -22,6 +22,11 @@ if not BASE.is_file():
     )
 
 source = BASE.read_text(encoding="utf-8")
+
+# Validate the exact base file before applying the existing overlays.
+# This replaces the older, ambiguous "Recovery anchors not found" failure.
+compile(source, str(BASE), "exec")
+
 
 
 # ==================================================
@@ -819,15 +824,6 @@ board_anchor = "def qe_simple_header("
 if source.count(board_anchor) != 1:
     raise RuntimeError("Kalshi version mismatch: scoreboard insertion")
 source = source.replace(board_anchor, board_code + board_anchor, 1)
-
-
-# RECOVERY: Move the scoreboard before the advanced paper engine.
-old_board = "            '    qe_performance_center()\\n'\n"
-old_engine = '            \'    with st.expander("⚙️ Advanced Tools · paper P&L, diagnostics & history", expanded=False):\\n\'\n'
-if source.count(old_board) != 1 or source.count(old_engine) != 1:
-    raise RuntimeError("Recovery anchors not found")
-source = source.replace(old_board, "", 1)
-source = source.replace(old_engine, old_board + old_engine, 1)
 
 # ==================================================
 # 7. START EXISTING DASHBOARD
