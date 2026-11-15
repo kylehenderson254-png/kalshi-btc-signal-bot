@@ -440,6 +440,8 @@ let userAdjustedView=false;
 let restoringView=false;
 
 let historyError='';
+let lastHistoryAttempt=0;
+let lastHistorySuccess=0;
 let cached=null;
 let markers=[];
 let renderedTime=0;
@@ -1221,7 +1223,9 @@ async function fetchJSON(url){
 
 async function load(){
  if(loading||dead)return;
-
+ // Throttle repeated REST history requests during feed gaps.
+ if(Date.now()-lastHistoryAttempt<15000)return;
+ lastHistoryAttempt=Date.now();
  loading=true;
 
  const started=Date.now()/1000;
