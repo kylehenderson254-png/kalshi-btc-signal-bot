@@ -735,9 +735,11 @@ function expired(){
 }
 
 function recentGap(){
- return bars.slice(-60).some(
-  (b,i,a)=>i>0&&b.time-a[i-1].time>60
- );
+ // Only a gap at the live edge needs immediate recovery. Coinbase's
+ // historical API can omit no-trade minutes; old gaps must not cause
+ // endless REST fetches and full chart redraws.
+ const recent=bars.slice(-4);
+ return recent.some((b,i)=>i>0&&b.time-recent[i-1].time>60);
 }
 
 function setStatus(text,color=amber){
@@ -1161,7 +1163,7 @@ function onTrade(
 
   if(old&&minute-old.time>60){
    needsReset=true;
-   load();
+   if(Date.now()-lastHistorySuccess>60000)load();
   }
  }
 
@@ -1289,22 +1291,30 @@ async function load(){
    }
   }
 
-  bars=[...map.values()]
+  const incoming=[...map.values()]
    .sort((a,b)=>a.time-b.time)
    .slice(-360);
 
-  if(!bars.length){
+  if(!incoming.length){
    throw Error('Empty history');
   }
 
-  needsReset=true;
+  // Avoid setData() on an unchanged history response: that operation
+  // visibly redraws all indicators and can look like a glitch.
+  const changed=incoming.length!==bars.length||incoming.some((b,i)=>{
+   const old=bars[i];
+   return !old||b.time!==old.time||b.open!==old.open||
+    b.high!==old.high||b.low!==old.low||
+    b.close!==old.close||b.volume!==old.volume;
+  });
   historyError='';
-
-  if(!lastTick){
-   updatePrice(bars.at(-1).close);
+  lastHistorySuccess=Date.now();
+  if(changed){
+   bars=incoming;
+   needsReset=true;
+   if(!lastTick)updatePrice(bars.at(-1).close);
+   calculate();
   }
-
-  calculate();
  }catch(e){
   historyError=
    'Historical candles unavailable; waiting for '+
@@ -1721,7 +1731,7 @@ function start(){
  healthTimer=setInterval(health,1000);
  countdownTimer=setInterval(updateCountdown,250);
  historyTimer=setInterval(()=>{
-  if(!dead&&recentGap()&&!loading)load();
+  if(!dead&&recentGap()&&!loading&&Date.now()-lastHistorySuccess>60000)load();
  },30000);
  pollTimer=setInterval(pollFallback,4000);
 
