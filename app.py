@@ -341,15 +341,16 @@ def qe_score_observation_study(
     )
 
 
+@st.fragment(run_every="60s")
 def qe_performance_center():
-    """One read-only scoreboard for all strategies."""
+    """One read-only scoreboard for all strategies, independently refreshed."""
 
     st.markdown(
         "### 👑 QUEEN'S PERFORMANCE SCOREBOARD"
     )
 
     st.caption(
-        "All strategies in one place. "
+        "Refreshes independently every minute. "
         "Paper trades and hypothetical observations "
         "are reported separately, never added together."
     )
@@ -755,7 +756,7 @@ source = source.replace(
 
 source = source.replace(
     "⚙️ Advanced Tools · paper P&L, diagnostics & history",
-    "⚙️ BACKGROUND PAPER ENGINE · Settings & diagnostics",
+    "⚙️ Diagnostics & paper controls · optional",
     1,
 )
 
