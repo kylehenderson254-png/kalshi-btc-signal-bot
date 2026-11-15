@@ -341,16 +341,15 @@ def qe_score_observation_study(
     )
 
 
-@st.fragment(run_every="60s")
 def qe_performance_center():
-    """One read-only scoreboard for all strategies, independently refreshed."""
+    """One read-only scoreboard for all strategies."""
 
     st.markdown(
         "### 👑 QUEEN'S PERFORMANCE SCOREBOARD"
     )
 
     st.caption(
-        "Refreshes independently every minute. "
+        "All strategies in one place. "
         "Paper trades and hypothetical observations "
         "are reported separately, never added together."
     )
@@ -756,7 +755,7 @@ source = source.replace(
 
 source = source.replace(
     "⚙️ Advanced Tools · paper P&L, diagnostics & history",
-    "⚙️ Diagnostics & paper controls · optional",
+    "⚙️ BACKGROUND PAPER ENGINE · Settings & diagnostics",
     1,
 )
 
@@ -766,6 +765,60 @@ source = source.replace(
     1,
 )
 
+
+# ==================================================
+# 7. FRESH $20 PAIRED PAPER CASH-OUT COMPARISON
+# ==================================================
+# This is intentionally layered onto the unchanged existing Kalshi engine.
+# Original $5 journals remain archived and untouched.
+
+comparison_hook = "        message = royal_scan(store, market, candle_fn, enabled)\n"
+if source.count(comparison_hook) != 1:
+    raise RuntimeError("Kalshi version mismatch: Royal scanner hook")
+
+comparison_call = """        message = royal_scan(store, market, candle_fn, enabled)
+        try:
+            from queens_cashout_compare import cycle as _qe20_cycle
+            _qe20_cycle(
+                store, market, enabled, quote_fn=quote,
+                available_fn=available, fee_fn=fee,
+                round_fn=cents_round, slippage=SLIPPAGE,
+                momentum_fn=royal_momentum, candle_fn=candle_fn,
+                fresh_fn=fresh_snapshot, series_fee_fn=series_fee,
+                original_close_fn=close_reason, snapshot_fn=snapshot_current,
+            )
+        except Exception as _qe20_error:
+            st.session_state['qe20_error'] = str(_qe20_error)
+"""
+source = source.replace(comparison_hook, comparison_call, 1)
+
+# The original scoreboard is retained as a callable backup but not shown.
+comparison_board = "def qe_performance_center():"
+if source.count(comparison_board) != 1:
+    raise RuntimeError("Kalshi version mismatch: scoreboard hook")
+source = source.replace(
+    comparison_board, "def qe_legacy_performance_center():", 1,
+)
+board_code = """
+def qe_performance_center():
+    try:
+        from queens_cashout_compare import dashboard as _qe20_dashboard
+        url = st.secrets.get('SUPABASE_URL')
+        key = st.secrets.get('SUPABASE_SERVICE_ROLE_KEY')
+        if not url or not key:
+            st.warning('Private paper journal unavailable; comparison paused.')
+            return
+        _qe20_dashboard(journal(str(url), str(key)), st)
+        if st.session_state.get('qe20_error'):
+            st.warning('Comparison monitor paused: ' + st.session_state['qe20_error'])
+    except Exception as exc:
+        st.warning('Comparison scoreboard unavailable: ' + str(exc))
+
+"""
+board_anchor = "def qe_simple_header("
+if source.count(board_anchor) != 1:
+    raise RuntimeError("Kalshi version mismatch: scoreboard insertion")
+source = source.replace(board_anchor, board_code + board_anchor, 1)
 
 # ==================================================
 # 7. START EXISTING DASHBOARD
