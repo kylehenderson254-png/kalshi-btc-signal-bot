@@ -767,6 +767,23 @@ source = source.replace(
 
 
 # ==================================================
+# 7. REMOVE THE UNUSED BACKUP CHART DROPDOWN
+# ==================================================
+# The primary live chart remains unchanged.
+# The backup chart is presentation-only; its old
+# plotting block is skipped to reduce dashboard clutter.
+backup = (
+    '    with st.expander("📉 Backup chart · optional", '
+    'expanded=False):\\n'
+    '        frame = btc_candles()\\n'
+    '        qe_btc_chart(frame, strike)'
+)
+if source.count(backup) != 1:
+    raise RuntimeError("Dashboard version mismatch: backup chart.")
+source = source.replace(backup, '    # Backup chart hidden; live chart preserved.', 1)
+
+
+# ==================================================
 # 7. START EXISTING DASHBOARD
 # ==================================================
 
