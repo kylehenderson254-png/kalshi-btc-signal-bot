@@ -1,5 +1,6 @@
 """QUEEN'S EDGE | 254: $20 paired paper exit study. No trading endpoints."""
 from datetime import datetime, timezone
+import time
 
 START_UTC = datetime(2026, 11, 15, 6, 43, tzinfo=timezone.utc)
 BUDGET = 20.0
@@ -94,9 +95,8 @@ def cycle(store, market, enabled, *, quote_fn, available_fn, fee_fn,
     if remaining <= 0:
         return
     # Both comparison legs use identical original Royal Scalp entry opportunities.
-    original_entries = dict(_objects(store, 'royal_scalp_entries'))
     key = ticker.replace('/', '_') + '.json'
-    source = original_entries.get(key)
+    source = store.get('royal_scalp_entries', key)
     if not isinstance(source, dict):
         return
     source_time = _time(source.get('at'))
@@ -180,9 +180,15 @@ def dashboard(store, st):
     st.markdown('### 👑 $20 CASH-OUT SHOWDOWN')
     st.caption('Fresh paired paper study only · prior $5 results hidden, not deleted · indicative fills')
     records, details = [], []
+    # Refresh historical reads at most once every 45 seconds per session.
+    # Live cycle and individual entry/exit writes remain uncached.
+    cache = st.session_state.setdefault('qe20_history_cache', {})
     for label, prefix in FOLDERS.items():
-        entries = _objects(store, prefix + '_entries')
-        exits = dict(_objects(store, prefix + '_exits'))
+        stamp, entries, exits = cache.get(prefix, (0, None, None))
+        if entries is None or time.monotonic() - stamp >= 45:
+            entries = _objects(store, prefix + '_entries')
+            exits = dict(_objects(store, prefix + '_exits'))
+            cache[prefix] = (time.monotonic(), entries, exits)
         values = []
         pending = 0
         for key, entry in entries:
