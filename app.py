@@ -147,29 +147,82 @@ class PaperJournal:
         self.headers = {"apikey": key, "Authorization": "Bearer " + key}
 
     def request(self, method, path, payload=None, missing=False):
-        resp = requests.request(method, self.base + path, timeout=12,
-                                headers={**self.headers, "Content-Type": "application/json",
-                                         "Cache-Control": "no-cache, no-store", "x-upsert": "false"},
-                                json=payload)
-        if missing and resp.status_code == 404:
+        resp = requests.request(
+            method, self.base + path, timeout=12,
+            headers={**self.headers, "Content-Type": "application/json",
+                     "Cache-Control": "no-cache, no-store", "x-upsert": "false"},
+            json=payload,
+        )
+        # Supabase Storage may return HTTP 400 with an embedded 404 or
+        # not_found error when an object has never been created. Distinguish
+        # that expected first-run condition from a genuine bad request.
+        try:
+            result = resp.json() if resp.content else {}
+        except ValueError:
+            result = {}
+        body = result if isinstance(result, dict) else {}
+        code = str(body.get("code") or "").lower()
+        error = str(body.get("error") or "").lower()
+        status_code = str(body.get("statusCode") or "")
+        message = str(body.get("message") or "").lower()
+        absent = (
+            resp.status_code == 404
+            or status_code == "404"
+            or code in ("nosuchkey", "not_found", "object_not_found")
+            or error in ("nosuchkey", "not_found", "object_not_found")
+            or ("object not found" in message and resp.status_code in (400, 404))
+        )
+        if missing and absent:
             return None
-        if resp.status_code == 409:
+        if resp.status_code == 409 and method == "POST":
             return {"duplicate": True}
-        resp.raise_for_status()
-        return resp.json() if resp.content else {}
+        if not resp.ok:
+            # Keep secrets and the private Supabase URL out of the UI.
+            raise RuntimeError(
+                f"Paper storage {method} failed (HTTP {resp.status_code}; "
+                f"code={code or error or status_code or 'unknown'})."
+            )
+        return result
 
     def ready(self):
         bucket = self.request("GET", "/bucket/" + BUCKET, missing=True)
         return isinstance(bucket, dict) and bucket.get("public") is False
 
     def read(self, folder, ticker):
+        """Find the object via Storage listing before GET.
+
+        Supabase may return HTTP 400 for a nonexistent Storage object.
+        Listing first avoids relying on version-specific missing-object codes.
+        """
         key = ticker + ".json"
-        result = self.request("GET", f"/object/authenticated/{BUCKET}/{folder}/{key}", missing=True)
-        return result if isinstance(result, dict) else None
+        items = self.request("POST", "/object/list/" + BUCKET, {
+            "prefix": folder, "limit": 1000, "offset": 0,
+            "sortBy": {"column": "name", "order": "desc"},
+        })
+        if not isinstance(items, list):
+            raise RuntimeError("Paper storage listing unavailable")
+        if not any(str(item.get("name") or "") == key for item in items):
+            return None
+        result = self.request(
+            "GET", f"/object/authenticated/{BUCKET}/{folder}/{key}"
+        )
+        if not isinstance(result, dict):
+            raise RuntimeError("Existing paper event has invalid content")
+        return result
 
     def once(self, folder, ticker, payload):
-        """Append-only; reread remote to handle duplicates and verify persistence."""
-        self.request("POST", f"/object/{BUCKET}/{folder}/{ticker}.json", payload)
+        """Immutable record; accept exact verified duplicate only."""
+        existing = self.read(folder, ticker)
+        if existing is not None:
+            return existing
+        try:
+            self.request("POST", f"/object/{BUCKET}/{folder}/{ticker}.json", payload)
+        except RuntimeError:
+            # A simultaneous session may have created the same object.
+            remote = self.read(folder, ticker)
+            if remote is not None:
+                return remote
+            raise
         saved = self.read(folder, ticker)
         if not isinstance(saved, dict):
             raise RuntimeError("Paper entry/exit was not verified in Supabase")
@@ -204,7 +257,7 @@ def journal_from_secrets():
         if not journal.ready():
             return None, "Existing private paper bucket missing; paper trades paused"
         return journal, None
-    except (requests.RequestException, ValueError, TypeError):
+    except (requests.RequestException, ValueError, TypeError, RuntimeError):
         return None, "Paper journal unavailable; paper trades paused"
 
 
@@ -474,7 +527,7 @@ def dashboard():
             settle_pending_paper(journal, entries, exits)
             entries, exits = records(journal)
         except (requests.RequestException, ValueError, RuntimeError, KeyError) as exc:
-            alerts.append("Paper engine delayed: " + str(exc)[:100])
+            alerts.append("Paper engine delayed; check Supabase storage access (" + type(exc).__name__ + ")")
     else:
         alerts.append(reason)
 
